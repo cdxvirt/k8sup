@@ -392,8 +392,8 @@ function main(){
       --volume=/var/run/dbus:/var/run/dbus:rw \
       --volume=/run/flannel:/run/flannel:rw \
       --volume=/dev:/dev:rw \
-      --volume=/var/lib/cni/:/var/lib/cni:rw \
-      --volume=/etc/cni:/etc/cni:rw \
+      --volume=var-cni:/var/lib/cni:rw \
+      --volume=etc-cni:/etc/cni:rw \
       --volume=${KUBE_ETC}/cp-certs.sh:/cp-certs.sh \
       --volume=${KUBE_CONF_PATH}/master-multi.json:${KUBE_CONF_PATH}/master-multi.json \
       --volume=${KUBE_CONF_PATH}/addon-manager-multinode.json:${KUBE_CONF_PATH}/addon-manager-multinode.json \
