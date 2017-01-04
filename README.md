@@ -58,7 +58,7 @@ $ sudo docker logs k8sup
 
 If you want to delete etcd data:
 <pre>
-$ sudo rm -rf /var/lib/etcd/*
+$ sudo docker volume rm etcd var-cni etc-cni certs
 </pre>
 
 NOTE: If you want to use Ceph RBD mounting with k8sup, make sure that the rbd, modprobe command binary files and the rbd.ko kernel object file are mounted to the k8sup container as volume.
