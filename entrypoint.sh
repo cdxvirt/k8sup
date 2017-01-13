@@ -43,8 +43,8 @@ function etcd_creator(){
 
   docker run \
     -d \
-    -v /usr/share/ca-certificates/:/etc/ssl/certs \
-    -v /var/lib/etcd:/var/lib/etcd \
+    -v certs:/etc/ssl/certs \
+    -v etcd:/var/lib/etcd \
     --net=host \
     --name=k8sup-etcd \
     "${ENV_ETCD_IMAGE}" \
@@ -186,8 +186,8 @@ function etcd_follower(){
 
   docker run \
     -d \
-    -v /usr/share/ca-certificates/:/etc/ssl/certs \
-    -v /var/lib/etcd:/var/lib/etcd \
+    -v certs:/etc/ssl/certs \
+    -v etcd:/var/lib/etcd \
     --net=host \
     --name=k8sup-etcd \
     "${ENV_ETCD_IMAGE}" \

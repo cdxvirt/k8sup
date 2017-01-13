@@ -17,6 +17,11 @@ Options:
 -h, --help                   This help text
 </pre>
 
+Build k8s:
+<pre>
+$ docker build -t develop/k8sup:k8s-1.5 .
+</pre>
+
 Run k8s:
 <pre>
 $ sudo docker run -d \
@@ -27,14 +32,17 @@ $ sudo docker run -d \
     -v $(which docker):/bin/docker:ro \
     -v /var/run/docker.sock:/var/run/docker.sock \
     -v /usr/lib/:/host/lib:ro \
+    -v /usr/sbin:/usr/sbin:ro \
+    -v /opt/bin:/opt/bin:ro \
     -v /lib/modules:/lib/modules:ro \
-    -v /etc/cni:/etc/cni \
-    -v /var/lib/cni:/var/lib/cni \
-    -v /var/lib/etcd:/var/lib/etcd \
     -v /var/lib/kubelet:/var/lib/kubelet \
     -v /etc/kubernetes:/etc/kubernetes \
+    -v var-cni:/var/lib/cni \
+    -v etc-cni:/etc/cni \
+    -v etcd:/var/lib/etcd \
     --name=k8sup \
-    cdxvirt/k8sup:latest \
+    develop/k8sup:k8s-1.5 \
+    --cluster={cluster-id} \
     --network={your-subnet-id/mask}
 </pre>
 
@@ -50,7 +58,7 @@ $ sudo docker logs k8sup
 
 If you want to delete etcd data:
 <pre>
-$ sudo rm -rf /var/lib/etcd/*
+$ sudo docker volume rm etcd var-cni etc-cni certs
 </pre>
 
 NOTE: If you want to use Ceph RBD mounting with k8sup, make sure that the rbd, modprobe command binary files and the rbd.ko kernel object file are mounted to the k8sup container as volume.
