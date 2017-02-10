@@ -148,6 +148,7 @@ function update_master_multi_keystone(){
   local NEW_MASTER_MULTI_VOLUME_MOUNTS
   local NEW_MASTER_MULTI_VOLUMES
   local NEW_MASTER_MULTI_JSON
+  local KEYSTONE_IMAGE_NAME="${KEYSTONE_REGISTRY}/keystone:k8sup-ldap-0.1"
   [[ ! -f "${MASTER_MULTI_JSON_FILE_PATH}" ]] && { echo "Error! could not find master-multi.json!"; return 1; }
 
   NEW_MASTER_MULTI_VOLUME_MOUNTS="$(echo '[]' \
@@ -155,7 +156,7 @@ function update_master_multi_keystone(){
                    | jq ". |= .+ [{\"name\":\"resolv-conf\",\"mountPath\":\"/etc/resolv.conf\"}]")"
   NEW_MASTER_MULTI_KEYSTONE_CONTAINERS="$(echo '[]' \
                    | jq ". |= .+ [{\"name\":\"keystone-tls\"}]" \
-                   | jq ".[0] |= .+ {\"image\":\"${KEYSTONE_REGISTRY}/keystone:k8sup-ldap\"}" \
+                   | jq ".[0] |= .+ {\"image\":\"${KEYSTONE_IMAGE_NAME}\"}" \
                    | jq ".[0] |= .+ {\"args\":[\"generate_key_files_to_k8s_and_hold\"]}" \
                    | jq ".[0] |= .+ {\"volumeMounts\":[{\"name\":\"keystone-tls-certs\",\"mountPath\":\"/etc/keystone/ssl/k8s\"}]}")"
   NEW_MASTER_MULTI_VOLUMES="$(echo '[]' \
@@ -627,10 +628,12 @@ function main(){
   if [[ "${ENABLE_KEYSTONE}" == "true" ]]; then
     echo "Trying to start keystone service..."
     [[ "${REGISTRY}" == "gcr.io/google_containers" ]] && local KEYSTONE_REGISTRY="wcen" || local KEYSTONE_REGISTRY="${REGISTRY}"
+    local KEYSTONE_VERSION="k8sup-ldap-0.1"
     mkdir -p "${SERVICE_ADDONS_PATH}"
     cp -f "/go/optional-svcs/keystone/keystone-rc.yaml" "${SERVICE_ADDONS_PATH}"
     cp -f "/go/optional-svcs/keystone/keystone-svc.yaml" "${SERVICE_ADDONS_PATH}"
     sed -i "s|\bKEYSTONE_REGISTRY\b|${KEYSTONE_REGISTRY}|g" "${SERVICE_ADDONS_PATH}"/*.yaml
+    sed -i "s|\bKEYSTONE_VERSION\b|${KEYSTONE_VERSION}|g" "${SERVICE_ADDONS_PATH}"/*.yaml
     update_master_multi_keystone "${KUBE_CONF_PATH}/master-multi.json" "${KEYSTONE_REGISTRY}"
   else
     rm -f "${SERVICE_ADDONS_PATH}/keystone-rc.yaml"

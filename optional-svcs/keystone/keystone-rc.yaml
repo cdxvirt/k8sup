@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
       - name: keystone
-        image: KEYSTONE_REGISTRY/keystone:k8sup-ldap
+        image: KEYSTONE_REGISTRY/keystone:KEYSTONE_VERSION
         imagePullPolicy: IfNotPresent
         args: ["k8sup_ldap"]
         ports:
