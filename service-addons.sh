@@ -6,8 +6,6 @@ KUBECTL_OPTS=${KUBECTL_OPTS:-}
 ADDON_CHECK_INTERVAL_SEC=${TEST_ADDON_CHECK_INTERVAL_SEC:-60}
 ADDON_PATH=${ADDON_PATH:-/etc/kubernetes/addons}
 
-SYSTEM_NAMESPACE=kube-system
-
 # Remember that you can't log from functions that print some output (because
 # logs are also printed on stdout).
 # $1 level
@@ -57,51 +55,88 @@ function run_until_success() {
       log DB3 "== Successfully executed ${command_name} at $(date -Is) ==" && \
       return 0
     let tries=tries-1
-    #log WRN "== Failed to execute ${command_name} at $(date -Is). ${tries} tries remaining. =="
+    log WRN "== Failed to execute ${command_name} at $(date -Is). ${tries} tries remaining. =="
     sleep ${delay}
   done
   return 1
-}
-function create_addons() {
-  local -r enable_prune=$1;
-  local -r additional_opt=$2;
-
-  for filename in $(ls ${ADDON_PATH}); do
-    namespace="$(sed -n "s/^[ \t]*namespace:[ \t]*\(.*\)/\1/p" "${ADDON_PATH}/${filename}" | uniq)"
-    if [[ -z "${namespace}" ]]; then
-      namespace="default"
-    elif [[ "$(echo "${namespace}" | wc -l)" -gt "1" ]]; then
-      log ERR "Mutilple namespaces in a yaml file: "${ADDON_PATH}/${filename}", skip..."
-      continue
-    fi
-    run_until_success "${KUBECTL} ${KUBECTL_OPTS} --namespace=${namespace} create -f ${ADDON_PATH}/${filename} ${additional_opt}" 1 1 \
-      && log INFO "++ obj ${filename} is created ++"
-  done
 }
 
 function update_addons() {
   local -r enable_prune=$1;
   local -r additional_opt=$2;
+  local namespace="default"
+  local no_namespace_file_path_list no_namespace_file_path_arry \
+        namespace_file_path_list namespace_file_path_arry \
+        soft_link_folder_list soft_link_folder_arry \
+        filename path length folder
 
-  for filename in $(ls ${ADDON_PATH}); do
-    namespace="$(sed -n "s/^[ \t]*namespace:[ \t]*\(.*\)/\1/p" "${ADDON_PATH}/${filename}" | uniq)"
-    if [[ -z "${namespace}" ]]; then
-      namespace="default"
-    elif [[ "$(echo "${namespace}" | wc -l)" -gt "1" ]]; then
-      log ERR "Mutilple namespaces in a yaml file: "${ADDON_PATH}/${filename}", skip..."
-      continue
-    fi
-    run_until_success "${KUBECTL} ${KUBECTL_OPTS} --namespace=${namespace} apply -f ${ADDON_PATH}/${filename} --prune=${enable_prune} -l cdxvirt/cluster-service=true ${additional_opt}" 1 1 \
-      && log INFO "++ obj ${filename} is applied ++"
-  done
+  # Clear all soft-link
+  rm -rf ${ADDON_PATH}/.* 2>/dev/null
 
-  if [[ $? -eq 0 ]]; then
-    log INFO "== Kubernetes addon update completed successfully at $(date -Is) =="
+  # Check files in $ADDON_PATH have namespaces, 
+  # if do not have soft-link them to $ADDON_PATH/.default folder,
+  # if have soft-link them to $ADDON_PATH/$namespace folder
+
+  # Files without namespace
+  no_namespace_file_path_list=$(find ${ADDON_PATH} -type f -name "*.yaml" -o -name "*.json" ! -type l | xargs --no-run-if-empty grep -L "namespace")
+  no_namespace_file_path_arry=(${no_namespace_file_path_list// / });
+  length=${#no_namespace_file_path_arry[@]}
+  if [ ${length} -ne "0" ]; then
+    for(( j=0; j<$length; j++ )); do
+      path=${no_namespace_file_path_arry[$j]}
+      filename=$(echo $path | sed 's/.*\///')
+
+      if [ -d ${ADDON_PATH}/.${namespace} ]; then
+        echo "Folder ${ADDON_PATH}/.${namespace} exist!" 1>/dev/null
+      else
+        mkdir -p ${ADDON_PATH}/.${namespace}
+      fi
+      ln -sf ${path} ${ADDON_PATH}/.${namespace}/${filename}
+    done
   fi
+
+  # Files with namespace
+  namespace_file_path_list=$(find ${ADDON_PATH} -type f -name "*.yaml" -o -name "*.json" ! -type l | xargs --no-run-if-empty grep -l "namespace")
+  namespace_file_path_arry=(${namespace_file_path_list// / });
+  length=${#namespace_file_path_arry[@]}
+  if [ ${length} -ne "0" ]; then
+    for(( j=0; j<$length; j++ )); do
+      path=${namespace_file_path_arry[$j]}
+      filename=$(echo $path | sed 's/.*\///')
+
+      if [ "${filename##*.}" == "yaml"  ]; then
+        namespace=$(find ${path} | xargs grep "namespace: " | sed 's/.*://; s/"//g; s/,//g; s/ //g')
+      elif [ "${filename##*.}" == "json" ]; then
+        namespace=$(find ${path} | xargs grep '"namespace":' | sed 's/.*://; s/"//g; s/,//g; s/ //g')
+      fi
+
+      if [ -d ${ADDON_PATH}/.${namespace} ]; then
+        echo "Folder ${ADDON_PATH}/.${namespace} exist!" 1>/dev/null
+      else
+        mkdir -p ${ADDON_PATH}/.${namespace}
+      fi
+      ln -sf ${path} ${ADDON_PATH}/.${namespace}/${filename}
+    done
+  fi
+
+  # Excute command kubectl apply
+  soft_link_folder_list=$(find ${ADDON_PATH} -type d -name ".*")
+  soft_link_folder_arry=(${soft_link_folder_list// / });
+  length=${#soft_link_folder_arry[@]}
+  for(( j=0; j<$length; j++ )); do
+    folder=${soft_link_folder_arry[$j]}
+    namespace=$(echo ${folder} | sed 's/.*\///; s/^.//')
+    run_until_success "${KUBECTL} ${KUBECTL_OPTS} apply --namespace=${namespace} -f ${folder} --prune=${enable_prune} -l cdxvirt/cluster-service=true ${additional_opt}" 1 1
+
+    if [[ $? -eq 0 ]]; then
+      log INFO "== Service addon update namespace ${namespace} completed successfully at $(date -Is) =="
+    elif [[ $? -ne 0  ]]; then
+      log WRN "== Service addon update namespace ${namespace} completed with errors at $(date -Is) =="
+    fi
+  done
 }
 
-log INFO "== Kubernetes addon manager started at $(date -Is) with ADDON_CHECK_INTERVAL_SEC=${ADDON_CHECK_INTERVAL_SEC} =="
-update_addons false
+log INFO "== Service addon manager started at $(date -Is) with ADDON_CHECK_INTERVAL_SEC=${ADDON_CHECK_INTERVAL_SEC} =="
 
 # Start the apply loop.
 # Check if the configuration has changed recently - in case the user
@@ -110,7 +145,6 @@ log INFO "== Entering periodical apply loop at $(date -Is) =="
 while true; do
   start_sec=$(date +"%s")
   # Only print stderr for the readability of logging
-  create_addons true ">/dev/null 2>&1"
   update_addons true ">/dev/null 2>&1"
   end_sec=$(date +"%s")
   len_sec=$((${end_sec}-${start_sec}))
