@@ -3,7 +3,7 @@
 KUBECTL=${KUBECTL_BIN:-/usr/local/bin/kubectl}
 KUBECTL_OPTS=${KUBECTL_OPTS:-}
 
-ADDON_CHECK_INTERVAL_SEC=${TEST_ADDON_CHECK_INTERVAL_SEC:-60}
+ADDON_CHECK_INTERVAL_SEC=${TEST_ADDON_CHECK_INTERVAL_SEC:-20}
 ADDON_PATH=${ADDON_PATH:-/etc/kubernetes/addons}
 
 # Remember that you can't log from functions that print some output (because
@@ -62,13 +62,40 @@ function run_until_success() {
 }
 
 function update_addons() {
+set -x
   local -r enable_prune=$1;
   local -r additional_opt=$2;
-  local namespace="default"
-  local no_namespace_file_path_list no_namespace_file_path_arry \
-        namespace_file_path_list namespace_file_path_arry \
+  local files_run_one_time_path_list files_run_one_time_path_arry \
+        files_without_namespace_path_list files_without_namespace_path_arry \
+        files_with_namespace_path_list files_with_namespace_path_arry \
         soft_link_folder_list soft_link_folder_arry \
-        filename path length folder
+        namespace filename path length folder file_type pattern
+
+  # Find out run one time files with no label 'cdxvirt/cluster-service: "true"' (ex: Namespace, ConfigMap, Job, StorageClass)
+  label='cdxvirt/cluster-service: "true"'
+  files_run_one_time_path_list=$(find ${ADDON_PATH} -type f -name "*.yaml" -o -name "*.json" ! -type l | xargs --no-run-if-empty grep -L "${label}")
+  files_run_one_time_path_arry=(${files_run_one_time_path_list// / });
+  length=${#files_run_one_time_path_arry[@]}
+
+  if [ ${length} -ne "0" ]; then
+    for(( j=0; j<$length; j++ )); do
+      path=${files_run_one_time_path_arry[$j]}
+      namespace=$(find ${path} | xargs sed 's/"//g; s/,//g; s/ //g' | grep "namespace:" | sed 's/namespace://g')
+
+      if [[ -z ${namespace} ]]; then
+        ${KUBECTL} ${KUBECTL_OPTS} create -f ${path}
+      else
+        ${KUBECTL} ${KUBECTL_OPTS} --namespace ${namespace} create -f ${path}
+      fi
+
+      if [[ $? -eq 0 ]]; then
+        echo "INFO == Service addon create ${path} completed successfully at $(date -Is) =="
+        rm -rf ${path}
+      elif [[ $? -ne 0  ]]; then
+        echo "WRN == Service addon create ${path} completed with erros at $(date -Is) =="
+      fi
+    done
+  fi
 
   # Clear all soft-link
   rm -rf ${ADDON_PATH}/.* 2>/dev/null
@@ -77,13 +104,14 @@ function update_addons() {
   # if do not have soft-link them to $ADDON_PATH/.default folder,
   # if have soft-link them to $ADDON_PATH/$namespace folder
 
-  # Files without namespace
-  no_namespace_file_path_list=$(find ${ADDON_PATH} -type f -name "*.yaml" -o -name "*.json" ! -type l | xargs --no-run-if-empty grep -L "namespace")
-  no_namespace_file_path_arry=(${no_namespace_file_path_list// / });
-  length=${#no_namespace_file_path_arry[@]}
+  # Files without define namespace
+  files_without_namespace_path_list=$(find ${ADDON_PATH} -type f -name "*.yaml" -o -name "*.json" ! -type l | xargs --no-run-if-empty grep -L "namespace")
+  files_without_namespace_path_arry=(${files_without_namespace_path_list// / });
+  length=${#files_without_namespace_path_arry[@]}
+  namespace="default"
   if [ ${length} -ne "0" ]; then
     for(( j=0; j<$length; j++ )); do
-      path=${no_namespace_file_path_arry[$j]}
+      path=${files_without_namespace_path_arry[$j]}
       filename=$(echo $path | sed 's/.*\///')
 
       if [ -d ${ADDON_PATH}/.${namespace} ]; then
@@ -95,13 +123,13 @@ function update_addons() {
     done
   fi
 
-  # Files with namespace
-  namespace_file_path_list=$(find ${ADDON_PATH} -type f -name "*.yaml" -o -name "*.json" ! -type l | xargs --no-run-if-empty grep -l "namespace")
-  namespace_file_path_arry=(${namespace_file_path_list// / });
-  length=${#namespace_file_path_arry[@]}
+  # Files with define namespace
+  files_with_namespace_path_list=$(find ${ADDON_PATH} -type f -name "*.yaml" -o -name "*.json" ! -type l | xargs --no-run-if-empty grep -l "namespace")
+  files_with_namespace_path_arry=(${files_with_namespace_path_list// / });
+  length=${#files_with_namespace_path_arry[@]}
   if [ ${length} -ne "0" ]; then
     for(( j=0; j<$length; j++ )); do
-      path=${namespace_file_path_arry[$j]}
+      path=${files_with_namespace_path_arry[$j]}
       filename=$(echo $path | sed 's/.*\///')
 
       if [ "${filename##*.}" == "yaml"  ]; then
