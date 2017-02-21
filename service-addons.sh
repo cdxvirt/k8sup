@@ -62,7 +62,6 @@ function run_until_success() {
 }
 
 function update_addons() {
-set -x
   local -r enable_prune=$1;
   local -r additional_opt=$2;
   local files_run_one_time_path_list files_run_one_time_path_arry \
