@@ -117,7 +117,7 @@ function cp_kube_certs(){
 function upload_kube_certs(){
   local ETCD_PATH="$1"
   local CERTS_DIR="/srv/kubernetes"
-  local FILE_LIST="ca.crt kubecfg.crt kubecfg.key server.cert server.key basic_auth.csv known_tokens.csv"
+  local FILE_LIST="ca.crt kubecfg.crt kubecfg.key server.cert server.key basic_auth.csv known_tokens.csv abac_policy_file.jsonl"
   local ENCODED_DATA=""
 
   # Wait a moment until all files exist
@@ -150,7 +150,7 @@ function upload_kube_certs(){
 function download_kube_certs(){
   local ETCD_PATH="$1"
   local CERTS_DIR="/srv/kubernetes"
-  local FILE_LIST="ca.crt kubecfg.crt kubecfg.key server.cert server.key basic_auth.csv known_tokens.csv"
+  local FILE_LIST="ca.crt kubecfg.crt kubecfg.key server.cert server.key basic_auth.csv known_tokens.csv abac_policy_file.jsonl"
   local RAWDATA=""
   local CERT=""
 
@@ -217,6 +217,9 @@ function main(){
   else
     upload_kube_certs "${ETCD_PATH}" &
   fi
+ 
+  mkdir -p /srv/kubernetes/ 
+  cp -f /abac_policy_file.jsonl /srv/kubernetes/
 
   /setup-files.sh "${DOMAIN_NAME}" &
 

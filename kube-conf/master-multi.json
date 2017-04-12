@@ -50,6 +50,8 @@
               "--token-auth-file=/srv/kubernetes/known_tokens.csv",
               "--authorization-mode=RBAC,AlwaysAllow",
               "--allow-privileged=true",
+              "--authorization-mode=RBAC,ABAC",
+              "--authorization-policy-file=/srv/kubernetes/abac_policy_file.jsonl",
               "--apiserver-count=1",
               "--v=2"
       ],

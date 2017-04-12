@@ -570,6 +570,7 @@ function main(){
   cp -rf /go/kube-conf/kubeconfig/kubeconfig.yaml "${KUBELET_VARLIB}/kubeconfig"
   cp -rf /go/kube-conf/addons "${KUBE_ETC}/"
   cp -f /go/cp-certs.sh "${KUBE_ETC}/"
+  cp -f /go/abac_policy_file.jsonl "${KUBE_ETC}/" 
   cp -f /go/service-addons.sh "${KUBE_ETC}/"
 
   local K8SUP_NTPSERVER_VERSION="0.1"
@@ -611,6 +612,7 @@ function main(){
     --net=host \
     --volume=/var/lib/kubelet/kubeconfig:/var/lib/kubelet/kubeconfig \
     --volume=${KUBE_ETC}/cp-certs.sh:/cp-certs.sh \
+    --volume=${KUBE_ETC}/abac_policy_file.jsonl:/abac_policy_file.jsonl \
     --name=k8sup-certs \
     "${HYPERKUBE_IMAGE_NAME}" \
     "${DEBUG_CMD} /cp-certs.sh" \
@@ -690,6 +692,7 @@ function main(){
       --volume=/var/lib/cni/:/var/lib/cni:rw \
       --volume=/etc/cni:/etc/cni:rw \
       --volume=${KUBE_ETC}/cp-certs.sh:/cp-certs.sh \
+      --volume=${KUBE_ETC}/abac_policy_file.jsonl:/abac_policy_file.jsonl \
       --volume=${KUBE_CONF_PATH}/master-multi.json:${KUBE_CONF_PATH}/master-multi.json \
       --volume=${KUBE_CONF_PATH}/addon-manager-multinode.json:${KUBE_CONF_PATH}/addon-manager-multinode.json \
       ${KUBEDNS_OPTION} \

@@ -22,6 +22,7 @@ ADD kube-up /go/kube-up
 ADD kube-down /go/kube-down
 ADD entrypoint.sh /go/entrypoint.sh
 ADD cp-certs.sh /go/cp-certs.sh
+ADD kube-conf/abac_policy_file.jsonl /go/abac_policy_file.jsonl
 ADD service-addons.sh /go/service-addons.sh
 
 RUN chmod +x /go/entrypoint.sh
