@@ -51,6 +51,7 @@
               "--allow-privileged=true",
               "--authorization-mode=RBAC,ABAC",
               "--authorization-policy-file=/srv/kubernetes/abac_policy_file.jsonl",
+              "--anonymous-auth=false",
               "--apiserver-count=1",
               "--v=2"
       ],
