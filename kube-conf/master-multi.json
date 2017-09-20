@@ -37,6 +37,7 @@
       "command": [
               "/hyperkube",
               "apiserver",
+              "--advertise-address=NODE_IPADDR",
               "--service-cluster-ip-range=10.0.0.0/24",
               "--etcd-servers=http://127.0.0.1:2379",
               "--admission-control=NamespaceLifecycle,LimitRanger,ServiceAccount,ResourceQuota",
@@ -49,6 +50,9 @@
               "--service-account-lookup=false",
               "--token-auth-file=/srv/kubernetes/known_tokens.csv",
               "--allow-privileged=true",
+              "--authorization-mode=RBAC,ABAC",
+              "--authorization-policy-file=/srv/kubernetes/abac-policy-file.jsonl",
+              "--anonymous-auth=false",
               "--apiserver-count=1",
               "--v=2"
       ],

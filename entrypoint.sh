@@ -8,7 +8,7 @@ trap 'cleanup $?' EXIT
 function cleanup(){
   local RC="$1"
   if [[ ! -f "/.started" ]] && [[ "${RC}" -eq "1" ]]; then
-    local LOGNAME="k8sup-$(date +"%Y%m%d%H%M%S-%N")"
+    local LOGNAME="k8sup-$(date +"%Y%m%d%H%M%S")"
     mkdir -p "/etc/kubernetes/logs"
     docker logs k8sup &>"/etc/kubernetes/logs/${LOGNAME}.log"
     docker inspect k8sup &>"/etc/kubernetes/logs/${LOGNAME}.json"
@@ -73,6 +73,7 @@ function etcd_creator(){
     -v /usr/share/ca-certificates/:/etc/ssl/certs \
     -v /var/lib/etcd:/var/lib/etcd \
     --net=host \
+    --restart=on-failure \
     --name=k8sup-etcd \
     "${ENV_ETCD_IMAGE}" \
     /usr/local/bin/etcd \
@@ -235,6 +236,7 @@ function etcd_follower(){
     -v /usr/share/ca-certificates/:/etc/ssl/certs \
     -v /var/lib/etcd:/var/lib/etcd \
     --net=host \
+    --restart=on-failure \
     --name=k8sup-etcd \
     "${ENV_ETCD_IMAGE}" \
     /usr/local/bin/etcd \
@@ -328,6 +330,7 @@ function flanneld(){
     -d \
     --name k8sup-flannel \
     --net=host \
+    --restart=on-failure \
     --privileged \
     -v /dev/net:/dev/net \
     -v /run/flannel:/run/flannel \
@@ -475,7 +478,7 @@ function kube_up(){
   local CONFIG_FILE="$1"
   source "${CONFIG_FILE}" || exit 1
 
-  local IPADDR="${EX_IPADDR}" && unset EX_IPADDR
+  local IP_AND_MASK="${EX_IP_AND_MASK}" && unset EX_IP_AND_MASK
   local K8S_VERSION="${EX_K8S_VERSION}" && unset EX_K8S_VERSION
   local REGISTRY="${EX_REGISTRY}" && unset EX_REGISTRY
   local FORCED_WORKER="${EX_FORCED_WORKER}" && unset EX_FORCED_WORKER
@@ -503,7 +506,7 @@ function kube_up(){
   if [[ "${ROLE}" == "creator" ]]; then
     local CREATOR_OPT="--creator"
   fi
-  /go/kube-up --ip="${IPADDR}" --version="${K8S_VERSION}" ${REGISTRY_OPTION} ${FORCED_WORKER_OPT} ${ENABLE_KEYSTONE_OPT} ${CREATOR_OPT}
+  /go/kube-up --ip-cidr="${IP_AND_MASK}" --version="${K8S_VERSION}" ${REGISTRY_OPTION} ${FORCED_WORKER_OPT} ${ENABLE_KEYSTONE_OPT} ${CREATOR_OPT}
 }
 
 function restart_flannel(){
@@ -597,7 +600,7 @@ Options:
                                e. g. \"192.168.11.0/24\" or \"192.168.11.1\"
                                or \"eth0\"
 -c, --cluster=CLUSTER_ID       Join a specified cluster
-    --k8s-version=VERSION      Specify k8s version (Default: 1.7.1)
+    --k8s-version=VERSION      Specify k8s version (Default: 1.7.3)
     --max-etcd-members=NUM     Maximum etcd member size (Default: 3)
     --new                      Force to start a new cluster
     --restore                  Try to restore etcd data and start a new cluster
@@ -754,7 +757,7 @@ function get_options(){
   fi
 
   if [[ -z "${EX_K8S_VERSION}" ]]; then
-    export EX_K8S_VERSION="1.7.1"
+    export EX_K8S_VERSION="1.7.3"
   fi
   if [[ -z "${EX_FLANNEL_VERSION}" ]]; then
     export EX_FLANNEL_VERSION="0.6.2"
