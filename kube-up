@@ -321,7 +321,7 @@ Options:
 -a, --apiserver-port=PORT           Apiserver port (Default: 6443)
     --apiserver-insecure-port=PORT  Apiserver insecure port (Default: 8080)
 -a, --etcd-port=PORT                etcd client port (Default: 2379)
--v, --version=VERSION               Specify k8s version (Default: 1.7.3)
+-v, --version=VERSION               Specify k8s version (Default: 1.8.3)
 -r, --registry=REGISTRY             Registry of docker image (Default: 'gcr.io/google_containers')
     --creator                       Mark as the first node
     --forced-worker                 Run as k8s worker persistently
@@ -451,7 +451,7 @@ function get_options(){
   fi
 
   if [[ -z "${EX_K8S_VERSION}" ]]; then
-    export EX_K8S_VERSION="1.7.3"
+    export EX_K8S_VERSION="1.8.3"
   fi
 
   if [[ -z "${EX_REGISTRY}" ]]; then

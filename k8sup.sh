@@ -607,7 +607,7 @@ Options:
                                e. g. \"192.168.11.0/24\" or \"192.168.11.1\"
                                or \"eth0\"
 -c, --cluster=CLUSTER_ID       Join a specified cluster
-    --k8s-version=VERSION      Specify k8s version (Default: 1.7.3)
+    --k8s-version=VERSION      Specify k8s version (Default: 1.8.3)
     --max-etcd-members=NUM     Maximum etcd member size (Default: 3)
     --new                      Force to start a new cluster
     --restore                  Try to restore etcd data and start a new cluster
@@ -769,7 +769,7 @@ function get_options(){
   fi
 
   if [[ -z "${EX_K8S_VERSION}" ]]; then
-    export EX_K8S_VERSION="1.7.3"
+    export EX_K8S_VERSION="1.8.3"
   fi
   if [[ -z "${EX_FLANNEL_VERSION}" ]]; then
     export EX_FLANNEL_VERSION="0.6.2"
@@ -812,7 +812,7 @@ function main(){
   local START_ETCD_ONLY="${EX_START_ETCD_ONLY}" && unset EX_START_ETCD_ONLY
 
   echo "Checking hyperkube version for the requirement..."
-  check_k8s_major_minor_version_meet_requirement "${K8S_VERSION}" "1.7" && echo "OK" || exit "$?"
+  check_k8s_major_minor_version_meet_requirement "${K8S_VERSION}" "1.8" && echo "OK" || exit "$?"
   echo "Detecting and getting hyperkube image..."
   check_is_image_available "${K8S_REGISTRY}/hyperkube-amd64:v${K8S_VERSION}" && echo "OK" || exit "$?"
 
