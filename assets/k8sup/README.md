@@ -32,13 +32,16 @@ Options:
 
 Run k8s:
 ```
-$ docker pull cdxvirt/k8sup:k8s-1.7
+$ docker pull cdxvirt/k8sup:v2.0
 $ docker run -d \
     --privileged \
     --net=host \
     --pid=host \
     --restart=always \
     -v $(which docker):/bin/docker:ro \
+    -v /run/systemd:/run/systemd \
+    -v /etc/modprobe.d/:/etc/modprobe.d \
+    -v /etc/systemd/network/:/etc/systemd/network \
     -v /var/run/docker.sock:/var/run/docker.sock \
     -v /usr/lib/:/host/lib:ro \
     -v /lib/modules:/lib/modules:ro \
@@ -47,9 +50,8 @@ $ docker run -d \
     -v /var/lib/etcd:/var/lib/etcd \
     -v /var/lib/kubelet:/var/lib/kubelet \
     -v /etc/kubernetes:/etc/kubernetes \
-    -v /etc/kubernetes/k8sup-home:/root \
     --name=k8sup \
-    cdxvirt/k8sup:k8s-1.7 \
+    cdxvirt/k8sup:v2.0 \
     --network={your-subnet-id/mask}
 ```
 
@@ -61,6 +63,9 @@ $ docker run \
     --pid=host \
     --rm=true \
     -v $(which docker):/bin/docker:ro \
+    -v /run/systemd:/run/systemd \
+    -v /etc/modprobe.d/:/etc/modprobe.d \
+    -v /etc/systemd/network/:/etc/systemd/network \
     -v /var/run/docker.sock:/var/run/docker.sock \
     -v /usr/lib/:/host/lib:ro \
     -v /lib/modules:/lib/modules:ro \
@@ -71,9 +76,8 @@ $ docker run \
     -v /var/lib/etcd:/var/lib/etcd \
     -v /var/lib/kubelet:/var/lib/kubelet \
     -v /etc/kubernetes:/etc/kubernetes \
-    -v /etc/kubernetes/k8sup-home:/root \
-    --entrypoint=/go/kube-down \
-    cdxvirt/k8sup:k8s-1.7
+    --entrypoint=/workdir/assets/k8sup/kube-down \
+    cdxvirt/k8sup:v2.0
 ```
 
 Remove k8s from node:
@@ -84,6 +88,9 @@ $ docker run \
     --pid=host \
     --rm=true \
     -v $(which docker):/bin/docker:ro \
+    -v /run/systemd:/run/systemd \
+    -v /etc/modprobe.d/:/etc/modprobe.d \
+    -v /etc/systemd/network/:/etc/systemd/network \
     -v /var/run/docker.sock:/var/run/docker.sock \
     -v /usr/lib/:/host/lib:ro \
     -v /lib/modules:/lib/modules:ro \
@@ -94,9 +101,8 @@ $ docker run \
     -v /var/lib/etcd:/var/lib/etcd \
     -v /var/lib/kubelet:/var/lib/kubelet \
     -v /etc/kubernetes:/etc/kubernetes \
-    -v /etc/kubernetes/k8sup-home:/root \
-    --entrypoint=/go/kube-down \
-    cdxvirt/k8sup:k8s-1.7 \
+    --entrypoint=/workdir/assets/k8sup/kube-down \
+    cdxvirt/k8sup:v2.0 \
     --remove
 ```
 
