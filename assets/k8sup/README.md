@@ -41,6 +41,9 @@ $ docker run -d \
     --pid=host \
     --restart=always \
     -v $(which docker):/bin/docker:ro \
+    -v /run/systemd:/run/systemd \
+    -v /etc/modprobe.d/:/etc/modprobe.d \
+    -v /etc/systemd/network/:/etc/systemd/network \
     -v /var/run/docker.sock:/var/run/docker.sock \
     -v /usr/lib/:/host/lib:ro \
     -v /lib/modules:/lib/modules:ro \
@@ -62,6 +65,9 @@ $ docker run \
     --pid=host \
     --rm=true \
     -v $(which docker):/bin/docker:ro \
+    -v /run/systemd:/run/systemd \
+    -v /etc/modprobe.d/:/etc/modprobe.d \
+    -v /etc/systemd/network/:/etc/systemd/network \
     -v /var/run/docker.sock:/var/run/docker.sock \
     -v /usr/lib/:/host/lib:ro \
     -v /lib/modules:/lib/modules:ro \
@@ -72,7 +78,7 @@ $ docker run \
     -v /var/lib/etcd:/var/lib/etcd \
     -v /var/lib/kubelet:/var/lib/kubelet \
     -v /etc/kubernetes:/etc/kubernetes \
-    --entrypoint=/go/kube-down \
+    --entrypoint=/workdir/assets/k8sup/kube-down \
     cdxvirt/k8sup:k8s-1.8
 ```
 
@@ -84,6 +90,9 @@ $ docker run \
     --pid=host \
     --rm=true \
     -v $(which docker):/bin/docker:ro \
+    -v /run/systemd:/run/systemd \
+    -v /etc/modprobe.d/:/etc/modprobe.d \
+    -v /etc/systemd/network/:/etc/systemd/network \
     -v /var/run/docker.sock:/var/run/docker.sock \
     -v /usr/lib/:/host/lib:ro \
     -v /lib/modules:/lib/modules:ro \
@@ -94,7 +103,7 @@ $ docker run \
     -v /var/lib/etcd:/var/lib/etcd \
     -v /var/lib/kubelet:/var/lib/kubelet \
     -v /etc/kubernetes:/etc/kubernetes \
-    --entrypoint=/go/kube-down \
+    --entrypoint=/workdir/assets/k8sup/kube-down \
     cdxvirt/k8sup:k8s-1.8 \
     --remove
 ```
