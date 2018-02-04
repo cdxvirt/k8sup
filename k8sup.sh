@@ -447,7 +447,7 @@ function get_network_by_cluster_id(){
     CLUSTER_ID="$(echo "${DISCOVERY_RESULTS}" | sed -n "s/.*clusterID=\([[:alnum:]_-]*\).*/\1/p"| uniq)"
     if [[ "$(echo "${CLUSTER_ID}" | wc -l)" -gt "1" ]]; then
       echo "${DISCOVERY_RESULTS}" 1>&2
-      echo "More than 1 cluster are found, please specify '--network' or '--cluster', exiting..." 1>&2
+      echo "More than 1 cluster are found, please specify '--network', '--cluster' or '--creator-ip', exiting..." 1>&2
       return 1
     fi
   fi
@@ -474,6 +474,40 @@ function get_network_by_cluster_id(){
 
   echo "${NETWORK}"
   return 0
+}
+
+function get_network_by_creator_ip(){
+  local CREATOR_IP="$1"
+  local IPADDR_PATTERN="[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}"
+  local IPPORT_PATTERN="[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}:[0-9]\{1,5\}"
+  local IPCIDR_PATTERN="[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\/[0-9]\{1,2\}"
+  local IPCIDR IPNET CIDR CREATOR_IPNET
+  local NETWORK=""
+
+  if echo "${CREATOR_IP}" | grep -q "^${IPPORT_PATTERN}$"; then
+    # Validate IP:PORT format (1.2.3.4:56)
+    CREATOR_IP="$(echo "${CREATOR_IP}" | cut -d ':' -f 1)"
+  elif ! echo "${CREATOR_IP}" | grep -q "^${IPADDR_PATTERN}$"; then
+    # Validate IP format (1.2.3.4)
+    echo "Error! --creator '${CREATOR_IP}' is empty or not valid format, exiting..." 1>&2
+    return 1
+  fi
+
+  for IPCIDR in $(ip addr show | grep -o "${IPCIDR_PATTERN}"); do
+    CIDR="$(echo "${IPCIDR}" | cut -d '/' -f 2)"
+    IPNET="$(get_subnet_id_and_mask "${IPCIDR}")"
+    CREATOR_IPNET="$(get_subnet_id_and_mask "${CREATOR_IP}/${CIDR}")"
+    if [[ "${IPNET}" == "${CREATOR_IPNET}" ]]; then
+      NETWORK="${IPNET}"
+      break
+    fi
+  done
+  if [[ -n "${NETWORK}" ]]; then
+    echo "${NETWORK}"
+  else
+    echo "Error! No such the right network interface to creator IP, exiting..." 1>&2
+    return 1
+  fi
 }
 
 function kube_up(){
@@ -610,6 +644,7 @@ Options:
     --k8s-version=VERSION      Specify k8s version (Default: 1.5.8)
     --max-etcd-members=NUM     Maximum etcd member size (Default: 3)
     --new                      Force to start a new cluster
+    --creator-ip=CREATOR_IP    Sepcify corator node IP directly (For follower node and skip node discovery)
     --restore                  Try to restore etcd data and start a new cluster
     --restart                  Restart etcd and k8s services
     --rejoin-etcd              Re-join the same etcd cluster
@@ -641,7 +676,7 @@ Options:
 function get_options(){
   local PROGNAME="${0##*/}"
   local SHORTOPTS="n:c:r:vh"
-  local LONGOPTS="network:,cluster:,k8s-version:,flannel-version:,etcd-version:,max-etcd-members:,k8s-insecure-port:,new,worker,debug,restore,restart,rejoin-etcd,start-kube-svcs-only,start-etcd-only,registry:,enable-keystone,version,help"
+  local LONGOPTS="network:,cluster:,k8s-version:,flannel-version:,etcd-version:,max-etcd-members:,k8s-insecure-port:,creator-ip:,new,worker,debug,restore,restart,rejoin-etcd,start-kube-svcs-only,start-etcd-only,registry:,enable-keystone,version,help"
   local PARSED_OPTIONS=""
   local K8SUP_VERSION="0.9.0"
 
@@ -673,6 +708,10 @@ function get_options(){
               ;;
              --max-etcd-members)
               export EX_MAX_ETCD_MEMBER_SIZE="$2"
+              shift 2
+              ;;
+             --creator-ip)
+              export EX_CREATOR_IP="$2"
               shift 2
               ;;
              --new)
@@ -752,6 +791,16 @@ function get_options(){
     exit 1
   fi
 
+  if [[ -n "${EX_CREATOR_IP}" ]] && [[ "${EX_NEW_CLUSTER}" == "true" ]]; then
+    echo "Error! can not use '--creator-ip' and '--new' a the same time, exiting..." 1>&2
+    exit 1
+  fi
+
+  if [[ -n "${EX_CREATOR_IP}" ]] && [[ -n "${EX_CLUSTER_ID}" ]]; then
+    echo "Error! can not use '--creator-ip' and '--cluster' a the same time, exiting..." 1>&2
+    exit 1
+  fi
+
   if [[ "${EX_RESTORE_ETCD}" == "true" ]]; then
     export EX_NEW_CLUSTER="true"
   fi
@@ -811,6 +860,7 @@ function main(){
   local CONFIG_FILE="/etc/kubernetes/k8sup-conf"
   local REJOIN_ETCD="${EX_REJOIN_ETCD}" && unset EX_REJOIN_ETCD
   local START_ETCD_ONLY="${EX_START_ETCD_ONLY}" && unset EX_START_ETCD_ONLY
+  local CREATOR_IP="${EX_CREATOR_IP}" && unset EX_CREATOR_IP
 
   echo "Checking hyperkube version for the requirement..."
   check_k8s_major_minor_version_meet_requirement "${K8S_VERSION}" "1.5" && echo "OK" || exit "$?"
@@ -845,13 +895,17 @@ function main(){
   local CLUSTER_ID="${EX_CLUSTER_ID}" && unset EX_CLUSTER_ID
   local NETWORK="${EX_NETWORK}" && unset EX_NETWORK
   if [[ -z "${NETWORK}" ]]; then
-    NETWORK="$(sed -n "s|.* EX_NETWORK=\(.*\)$|\1|p" "${CONFIG_FILE}")"
-    if [[ -z "${NETWORK}" ]]; then
+    if [[ -f "${CONFIG_FILE}" ]]; then
+      NETWORK="$(sed -n "s|.* EX_NETWORK=\(.*\)$|\1|p" "${CONFIG_FILE}")"
+    elif [[ -n "${CREATOR_IP}" ]]; then
+      NETWORK="$(get_network_by_creator_ip "${CREATOR_IP}")" || exit 1
+    else
       NETWORK="$(get_network_by_cluster_id "${CLUSTER_ID}")" || exit 1
     fi
   fi
   local IP_AND_MASK=""
   IP_AND_MASK="$(get_ipaddr_and_mask_from_netinfo "${NETWORK}")" || exit 1
+  echo "Use the interface of ${IP_AND_MASK}..."
   local IPADDR="$(echo "${IP_AND_MASK}" | cut -d '/' -f 1)"
   local NEW_CLUSTER="${EX_NEW_CLUSTER}" && unset EX_NEW_CLUSTER
   local MAX_ETCD_MEMBER_SIZE="${EX_MAX_ETCD_MEMBER_SIZE}" && unset EX_MAX_ETCD_MEMBER_SIZE
@@ -862,6 +916,7 @@ function main(){
   local K8S_PORT="6443"
   local SUBNET_ID_AND_MASK="$(get_subnet_id_and_mask "${IP_AND_MASK}")"
   local IPADDR_PATTERN="[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}"
+  local IPPORT_PATTERN="[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}:[0-9]\{1,5\}"
 
   bash -c 'docker stop k8sup-etcd k8sup-flannel k8sup-kubelet k8sup-certs' &>/dev/null || true
   bash -c 'docker rm k8sup-etcd k8sup-flannel k8sup-kubelet k8sup-certs' &>/dev/null || true
@@ -875,7 +930,22 @@ function main(){
     etcd_creator "${IPADDR}" "${NODE_NAME}" "${CLUSTER_ID}" "${MAX_ETCD_MEMBER_SIZE}" \
       "${ETCD_CLIENT_PORT}" "${NEW_CLUSTER}" "${RESTORE_ETCD}" && ROLE="follower" || exit 1
   else
-    if [[ "${NEW_CLUSTER}" != "true" ]]; then
+    if [[ -n "${CREATOR_IP}" ]]; then
+      # Skip node discovery
+      # Validate IP format (1.2.3.4)
+      if echo "${CREATOR_IP}" | grep -q "^${IPADDR_PATTERN}$"; then
+        CREATOR_IP="${CREATOR_IP}:${ETCD_CLIENT_PORT}"
+      fi
+      # Validate IP:PORT format (1.2.3.4:56)
+      if ! echo "${CREATOR_IP}" | grep -q "^${IPPORT_PATTERN}$"; then
+        echo "Error! --creator '${CREATOR_IP}' is not valid format, exiting..." 1>&2
+        exit 1
+      fi
+      echo "Creator IP has been specified, this node will be a follower node and skip node discovery..."
+      EXISTING_ETCD_NODE="${CREATOR_IP}"
+      EXISTING_ETCD_NODE_LIST="${EXISTING_ETCD_NODE}"
+    elif [[ "${NEW_CLUSTER}" != "true" ]]; then
+      # Run node discovery
       /go/dnssd/registering -IPMask "${IP_AND_MASK}" -port "${ETCD_CLIENT_PORT}" -clusterID "${CLUSTER_ID}" -etcdProxy "${PROXY}" -etcdStarted "false" 2>/dev/null &
       # If do not force to start an etcd cluster, make a discovery.
       echo "Discovering etcd cluster..."
