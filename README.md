@@ -14,19 +14,15 @@ Options:
                                e. g. "192.168.11.0/24" or "192.168.11.1"
                                or "eth0"
 -c, --cluster=CLUSTER_ID       Join a specified cluster
-    --k8s-version=VERSION      Specify k8s version (Default: 1.5.2)
+    --k8s-version=VERSION      Specify k8s version (Default: 1.5.8)
     --max-etcd-members=NUM     Maximum etcd member size (Default: 3)
     --restore                  Try to restore etcd data and start a new cluster
-    --restart                  Restart etcd and k8s services
-    --rejoin-etcd              Re-join the same etcd cluster
-    --start-kube-svcs-only     Try to start kubernetes services (Assume etcd and flannel are ready)
-    --start-etcd-only          Start etcd and flannel but don't start kubernetes services
+    --k8s-insecure-port=PORT   Kube-apiserver insecure port (Default: 8080)
     --worker                   Force to run as k8s worker and etcd proxy
     --debug                    Enable debug mode
-    --enable-keystone          Enable Keystone service (Default: disabled)
 -r, --registry=REGISTRY        Registry of docker image
                                (Default: 'quay.io/coreos' and 'gcr.io/google_containers')
--v, --version                  Show k8sup version                               
+-v, --version                  Show k8sup version
 -h, --help                     This help text
 ```
 
@@ -54,7 +50,47 @@ $ docker run -d \
 
 Stop k8s:
 ```
-$ docker exec k8sup /go/kube-down
+$ docker run \
+    --privileged \
+    --net=host \
+    --pid=host \
+    --rm=true \
+    -v $(which docker):/bin/docker:ro \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    -v /usr/lib/:/host/lib:ro \
+    -v /lib/modules:/lib/modules:ro \
+    -v /usr/sbin/modprobe:/usr/sbin/modprobe:ro \
+    -v /opt/bin:/opt/bin:rw \
+    -v /etc/cni:/etc/cni \
+    -v /var/lib/cni:/var/lib/cni \
+    -v /var/lib/etcd:/var/lib/etcd \
+    -v /var/lib/kubelet:/var/lib/kubelet \
+    -v /etc/kubernetes:/etc/kubernetes \
+    --entrypoint=/go/kube-down \
+    cdxvirt/k8sup:latest
+```
+
+Remove k8s from node:
+```
+$ docker run \
+    --privileged \
+    --net=host \
+    --pid=host \
+    --rm=true \
+    -v $(which docker):/bin/docker:ro \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    -v /usr/lib/:/host/lib:ro \
+    -v /lib/modules:/lib/modules:ro \
+    -v /usr/sbin/modprobe:/usr/sbin/modprobe:ro \
+    -v /opt/bin:/opt/bin:rw \
+    -v /etc/cni:/etc/cni \
+    -v /var/lib/cni:/var/lib/cni \
+    -v /var/lib/etcd:/var/lib/etcd \
+    -v /var/lib/kubelet:/var/lib/kubelet \
+    -v /etc/kubernetes:/etc/kubernetes \
+    --entrypoint=/go/kube-down \
+    cdxvirt/k8sup:latest \
+    --remove
 ```
 
 Show k8sup log and Cluster ID:

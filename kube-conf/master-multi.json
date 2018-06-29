@@ -37,7 +37,10 @@
       "command": [
               "/hyperkube",
               "apiserver",
-              "--service-cluster-ip-range=10.0.0.1/24",
+              "--insecure-port=APISERVER_INSECURE_PORT",
+              "--advertise-address=NODE_IPADDR",
+              "--kubelet-preferred-address-types=InternalIP,Hostname,ExternalIP",
+              "--service-cluster-ip-range=10.0.0.0/24",
               "--etcd-servers=http://127.0.0.1:2379",
               "--admission-control=NamespaceLifecycle,LimitRanger,ServiceAccount,ResourceQuota",
               "--basic-auth-file=/srv/kubernetes/basic_auth.csv",

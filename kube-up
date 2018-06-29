@@ -4,14 +4,23 @@ source "$(dirname "$0")/runcom" || { echo 'Can not load the rumcom file, exiting
 
 #---
 
-function set_role_labels(){
-  local WORKER="$1"
-  local FORCED_WORKER="$2"
+function get_node_labels(){
+  local IPADDR="$1"
+  local WORKER="$2"
+  local FORCED_WORKER="$3"
   local ROLE_LABELS
   local K8S_MASTER
-  [[ "${WORKER}" == "false" ]] && K8S_MASTER="true" || K8S_MASTER="false"
+  local ROLE
 
-  ROLE_LABELS="cdxvirt/k8s_master=${K8S_MASTER},cdxvirt/k8s_forced_worker=${FORCED_WORKER}"
+  if [[ "${WORKER}" == "false" ]]; then
+    ROLE="master"
+    K8S_MASTER="true"
+  else
+    ROLE="worker"
+    K8S_MASTER="false"
+  fi
+
+  ROLE_LABELS="node-role.kubernetes.io/${ROLE}=,cdxvirt/k8s_master=${K8S_MASTER},cdxvirt/k8s_forced_worker=${FORCED_WORKER},cdxvirt/nodeip=${IPADDR}"
 
   echo "${ROLE_LABELS}"
 }
@@ -116,7 +125,8 @@ function update_master_multi_rbd_mount(){
   local ARGS=("$@")
   local RBD_CMD_PATH="${ARGS[0]}"
   local DOCKER_CMD_PATH="${ARGS[3]}"
-  local MASTER_MULTI_JSON_FILE_PATH="${ARGS[4]}"
+  local DOCKER_LIB_PATH="${ARGS[4]}"
+  local MASTER_MULTI_JSON_FILE_PATH="${ARGS[5]}"
   local NEW_MASTER_MULTI_VOLUME_MOUNTS
   local NEW_MASTER_MULTI_VOLUMES
   local NEW_MASTER_MULTI_JSON
@@ -124,18 +134,18 @@ function update_master_multi_rbd_mount(){
 
   NEW_MASTER_MULTI_VOLUME_MOUNTS="$(echo '[]' \
                    | jq ". |= .+ [{\"name\":\"rbd\",\"mountPath\":\"/bin/rbd\"}]" \
-                   | jq ". |= .+ [{\"name\":\"usr-lib\",\"mountPath\":\"/host/lib\"}]" \
+                   | jq ". |= .+ [{\"name\":\"docker-lib\",\"mountPath\":\"/host/lib\"}]" \
                    | jq ". |= .+ [{\"name\":\"docker\",\"mountPath\":\"/bin/docker\"}]" \
                    | jq ". |= .+ [{\"name\":\"docker-sock\",\"mountPath\":\"/var/run/docker.sock\"}]")"
   NEW_MASTER_MULTI_VOLUMES="$(echo '[]' \
              | jq ". |= .+ [{\"name\":\"rbd\",\"hostPath\":{\"path\":\"${RBD_CMD_PATH}\"}}]" \
-             | jq ". |= .+ [{\"name\":\"usr-lib\",\"hostPath\":{\"path\":\"/usr/lib/\"}}]" \
+             | jq ". |= .+ [{\"name\":\"docker-lib\",\"hostPath\":{\"path\":\"${DOCKER_LIB_PATH}\"}}]" \
              | jq ". |= .+ [{\"name\":\"docker\",\"hostPath\":{\"path\":\"${DOCKER_CMD_PATH}\"}}]" \
              | jq ". |= .+ [{\"name\":\"docker-sock\",\"hostPath\":{\"path\":\"/var/run/docker.sock\"}}]")"
   NEW_MASTER_MULTI_JSON="$(cat "${MASTER_MULTI_JSON_FILE_PATH}" \
     | jq ".spec.containers[0].volumeMounts |= .+ ${NEW_MASTER_MULTI_VOLUME_MOUNTS}" \
     | jq ".spec.volumes |= .+ ${NEW_MASTER_MULTI_VOLUMES}" \
-    | jq ".spec.containers[1].command |= .+ [\"--service-node-port-range=1-32767\"]" \
+    | jq ".spec.containers[1].command |= .+ [\"--service-node-port-range=1-65535\"]" \
     | sed "s|\"--admission-control=\(.*\)\",|\"--admission-control=\1,DefaultStorageClass\",|g")"
   [[ -z "${NEW_MASTER_MULTI_JSON}" ]] || [[ "${NEW_MASTER_MULTI_JSON}" == "null" ]] && return 1
 
@@ -155,19 +165,37 @@ function update_master_multi_keystone(){
   echo "${NEW_MASTER_MULTI_JSON}" > "${MASTER_MULTI_JSON_FILE_PATH}"
 }
 
+function check_cmd_in_container_image(){
+  local CMD="$1"
+  local IMAGE="$2"
+  if [[ -z "${CMD}" || -z "${IMAGE}" ]]; then
+    echo "Missing cmd or hyperkube image name in cmd check function, exiting..." 1>&2
+    exit 1
+  fi
+
+  docker run --rm "${IMAGE}" /bin/sh -c "type '${CMD}'" &>/dev/null
+  return "$?"
+}
+
 function make_rbd_docker_option(){
   local ARGS=("$@")
   local RBD_CMD_PATH="${ARGS[0]}"
   local RBD_KO_PATH="${ARGS[1]}"
   local MODPROBE_CMD_PATH="${ARGS[2]}"
   local DOCKER_CMD_PATH="${ARGS[3]}"
+  local DOCKER_LIB_PATH="${ARGS[4]}"
+  local HYPERKUBE_IMAGE_NAME="${ARGS[5]}"
+  local MODPROBE_OPT=""
   [[ -z "${RBD_CMD_PATH}" ]] && return 1
+
+  check_cmd_in_container_image "modprobe" "${HYPERKUBE_IMAGE_NAME}" \
+    || MODPROBE_OPT="--volume=${MODPROBE_CMD_PATH}:/sbin/modprobe:ro"
 
   local RBD_OPTIONS="--volume=${RBD_CMD_PATH}:/bin/rbd:ro \
         --volume=${RBD_KO_PATH}:${RBD_KO_PATH}:ro \
-        --volume=${MODPROBE_CMD_PATH}:/sbin/modprobe:ro \
+        ${MODPROBE_OPT} \
         --volume=${DOCKER_CMD_PATH}:/bin/docker:ro \
-        --volume=/usr/lib/:/host/lib:ro \
+        --volume=${DOCKER_LIB_PATH}:/host/lib:ro \
         --volume=/lib/modules:/lib/modules:ro"
 
   echo "${RBD_OPTIONS}"
@@ -182,11 +210,13 @@ function rbd_env_detector(){
   local DEFAULT_RBD_CMD_HOST_PATH="/opt/bin"
   local RBD_CMD_CONTAINER_PATH
 
-  [[ -n "$(echo "${VOLUMES}" | grep "/usr/lib")" ]] \
+  [[ -n "$(echo "${VOLUMES}" | grep -E "/usr/lib|/run/torcx/unpack/docker/lib")" ]] \
     && [[ -n "$(echo "${VOLUMES}" | grep "/bin")" ]] \
     && RBD_KO_PATH="$(get_filepath_from_volumes "rbd.ko" "${VOLUMES}")" \
     && MODPROBE_CMD_PATH="$(get_filepath_from_volumes "modprobe" "${VOLUMES}" "true")" \
     && DOCKER_CMD_PATH="$(get_filepath_from_volumes "docker" "$(echo "${VOLUMES}" | grep "/bin")" "true")" \
+    && DOCKER_LIB_PATH="$(echo "${VOLUMES}" | grep ":/host/lib" | cut -d ':' -f 1)" \
+    && [[ -n "${DOCKER_LIB_PATH}" ]] \
     || { echo "RBD mounting is not available on this host." 1>&2 && return 1; }
 
     if ! RBD_CMD_PATH="$(get_filepath_from_volumes "rbd" "${VOLUMES}" "true")"; then
@@ -205,7 +235,7 @@ function rbd_env_detector(){
     fi
 
   echo "RBD mounting is available on this host." 1>&2
-  echo "${RBD_CMD_PATH}" "${RBD_KO_PATH}" "${MODPROBE_CMD_PATH}" "${DOCKER_CMD_PATH}"
+  echo "${RBD_CMD_PATH}" "${RBD_KO_PATH}" "${MODPROBE_CMD_PATH}" "${DOCKER_CMD_PATH}" "${DOCKER_LIB_PATH}"
 
   return 0
 }
@@ -251,22 +281,31 @@ function ntp_updater(){
   local TIME_GAP="$2"
   local RESULT
 
-  until ntpdate "${K8SUP_NTPSERVER_CLUSTER_IP}" 2>/dev/null; do
-    sleep 1
-  done
-  echo "NTP client synchronized!" 1>&2
-  sleep "${TIME_GAP}"
+  if ! ps aux | grep -v grep | grep -q "/etc/chrony/chrony.conf"; then
+    until ntpdate -b "${K8SUP_NTPSERVER_CLUSTER_IP}" 2>/dev/null; do
+      sleep 1
+    done
+    echo "NTP client synchronized!" 1>&2
+    sleep "${TIME_GAP}"
+  else
+    echo "NTP server pod is running on this node, skip time sync at this moment."
+  fi
 
   while true; do
-    RESULT="$(ntpdate "${K8SUP_NTPSERVER_CLUSTER_IP}" 2>&1)" || true
-    [[ "$-" == *x* ]] && echo "${RESULT}" 1>&2
+    if ! ps aux | grep -v grep | grep -q "/etc/chrony/chrony.conf"; then
+      RESULT="$(ntpdate -b "${K8SUP_NTPSERVER_CLUSTER_IP}" 2>&1)" || true
+      [[ "$-" == *x* ]] && echo "${RESULT}" 1>&2
+    else
+      [[ "$-" == *x* ]] \
+        && echo "NTP server pod is running on this node, skip time sync at this moment." 1>&2
+    fi
     sleep "${TIME_GAP}"
   done
 }
 
 # Try to set this node as schedulable
 function set_node_schedulable(){
-  local IPADDR="$1"
+  local NODE_NAME="$1"
   local KUBELET_VARLIB="$2"
   local HYPERKUBE_IMAGE_NAME="$3"
 
@@ -278,19 +317,17 @@ function set_node_schedulable(){
     "${HYPERKUBE_IMAGE_NAME}" \
     /hyperkube kubectl \
      --kubeconfig ${KUBELET_VARLIB}/kubeconfig/kubeconfig.yaml \
-     uncordon "${IPADDR}" &>/dev/null; do
+     uncordon "${NODE_NAME}" &>/dev/null; do
        sleep 1
   done
 }
 
 # Try to set this node as schedulable
-function update_node_role_label(){
-  local IPADDR="$1"
+function update_node_labels(){
+  local NODE_NAME="$1"
   local KUBELET_VARLIB="$2"
   local HYPERKUBE_IMAGE_NAME="$3"
-  local WORKER="$4"
-  local K8S_MASTER
-  [[ "${WORKER}" == "false" ]] && K8S_MASTER="true" || K8S_MASTER="false"
+  local NODE_LABELS="$(echo "$4" | sed 's/,/ /g')"
 
   echo "Update role label for this node..." 1>&2
   until docker run \
@@ -300,41 +337,26 @@ function update_node_role_label(){
     "${HYPERKUBE_IMAGE_NAME}" \
     /hyperkube kubectl \
      --kubeconfig ${KUBELET_VARLIB}/kubeconfig/kubeconfig.yaml \
-     label --overwrite node "${IPADDR}" "cdxvirt/k8s_master=${K8S_MASTER}" &>/dev/null; do
+     label --overwrite node "${NODE_NAME}" ${NODE_LABELS} &>/dev/null; do
        sleep 1
   done
-}
-
-function get_default_iface_ipaddr(){
-  local IPMASK_PATTERN="[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\/[0-9]\{1,2\}"
-  local GW_IFACE="$(ip route | grep default | awk '{print $5}')"
-  local GW_IPADDR="$(ip addr show dev "${GW_IFACE}" | grep -o "${IPMASK_PATTERN}" | cut -d '/' -f 1)"
-
-  echo "${GW_IPADDR}"
-}
-
-function mark_default_iface_ipaddr(){
-  local IPADDR="$1"
-  local ETCD_CLIENT_PORT="$2"
-  local GW_IPADDR="$(get_default_iface_ipaddr)"
-
-  curl -sf "http://127.0.0.1:${ETCD_CLIENT_PORT}/v2/keys/k8sup/cluster/default-iface-ipaddr/${IPADDR}" -XPUT -d value="${GW_IPADDR}" 1>/dev/null
 }
 
 function show_usage(){
   USAGE="Usage: ${0##*/} [options...]
 Options:
--i, --ip=IPADDR               Host IP address (Required)
--p, --worker                  Run as k8s worker
--a, --apiserver-port=PORT     Apiserver port (Default: 6443)
--a, --etcd-port=PORT          etcd client port (Default: 2379)
--v, --version=VERSION         Specify k8s version (Default: 1.5.6)
--r, --registry=REGISTRY       Registry of docker image (Default: 'gcr.io/google_containers')
-    --creator                 Mark as the first node
-    --forced-worker           Run as k8s worker persistently
-    --reset-labels            Reset node labels
-    --enable-keystone         Enable Keystone service (Default: disabled)
--h, --help                    This help text
+-i, --ip=IPADDR                     Host IP address (Required)
+-p, --worker                        Run as k8s worker
+-a, --apiserver-port=PORT           Apiserver port (Default: 6443)
+    --apiserver-insecure-port=PORT  Apiserver insecure port (Default: 8080)
+-a, --etcd-port=PORT                etcd client port (Default: 2379)
+-v, --version=VERSION               Specify k8s version (Default: 1.5.8)
+-r, --registry=REGISTRY             Registry of docker image (Default: 'gcr.io/google_containers')
+    --creator                       Mark as the first node
+    --forced-worker                 Run as k8s worker persistently
+    --reset-labels                  Reset node labels
+    --enable-keystone               Enable Keystone service (Default: disabled)
+-h, --help                          This help text
 "
 
   echo "${USAGE}"
@@ -343,7 +365,7 @@ Options:
 function get_options(){
   local PROGNAME="${0##*/}"
   local SHORTOPTS="i:wa:v:r:h"
-  local LONGOPTS="ip:,apiserver-port:,etcd-port:,creator,worker,version:,registry:,forced-worker,reset-labels,enable-keystone,help"
+  local LONGOPTS="ip-cidr:,apiserver-port:,apiserver-insecure-port:,etcd-port:,creator,worker,version:,registry:,forced-worker,reset-labels,enable-keystone,help"
   local PARSED_OPTIONS=""
 
   PARSED_OPTIONS="$(getopt -o "${SHORTOPTS}" --long "${LONGOPTS}" -n "${PROGNAME}" -- "$@")" || exit 1
@@ -352,12 +374,16 @@ function get_options(){
   # extract options and their arguments into variables.
   while true ; do
       case "$1" in
-          -i|--ip)
-              export EX_IPADDR="$2"
+          -i|--ip-cidr)
+              export EX_IPCIDR="$2"
               shift 2
               ;;
           -a|--apiserver-port)
               export EX_APISERVER_PORT="$2"
+              shift 2
+              ;;
+             --apiserver-insecure-port)
+              export EX_APISERVER_INSECURE_PORT="$2"
               shift 2
               ;;
           -a|--etcd-port)
@@ -410,15 +436,22 @@ function get_options(){
       esac
   done
 
-
-  if [[ -z "${EX_IPADDR}" ]] || \
-   [[ -z "$(ip addr | sed -nr "s/.*inet ([^ ]+)\/.*/\1/p" | grep -w "${EX_IPADDR}")" ]]; then
-    echo "IP address error, exiting..." 1>&2
+  local IPCIDR_PATTERN="[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\/[0-9]\{1,2\}"
+  if [[ -z "$(echo "${EX_IPCIDR}" | grep -o "${IPCIDR_PATTERN}")" ]] || \
+   [[ -z "$(ip addr | sed -nr "s/.*inet ([^ ]+) .*/\1/p" | grep -w "${EX_IPCIDR}")" ]]; then
+    echo "IP/CIDR error, exiting..." 1>&2
     exit 1
   fi
 
   if [[ -z "${EX_APISERVER_PORT}" ]]; then
     export EX_APISERVER_PORT="6443"
+  fi
+
+  if [[ -z "${EX_APISERVER_INSECURE_PORT}" ]]; then
+    export EX_APISERVER_INSECURE_PORT="8080"
+  elif [[ -n "$(echo "${EX_APISERVER_INSECURE_PORT}" | grep -o '[^0-9]*')" ]]; then
+    echo "Error: wrong kube-apiserver insecure port, exiting..." 1>&2
+    exit 1
   fi
 
   if [[ -z "${EX_ETCD_CLIENT_PORT}" ]]; then
@@ -447,7 +480,7 @@ function get_options(){
   fi
 
   if [[ -z "${EX_K8S_VERSION}" ]]; then
-    export EX_K8S_VERSION="1.5.6"
+    export EX_K8S_VERSION="1.5.8"
   fi
 
   if [[ -z "${EX_REGISTRY}" ]]; then
@@ -495,14 +528,17 @@ function get_API_Servers(){
 
 function main(){
   get_options "$@"
-  local IPADDR="${EX_IPADDR}" && unset EX_IPADDR
+  local IPCIDR="${EX_IPCIDR}" && unset EX_IPCIDR
   local WORKER="${EX_WORKER}" && unset EX_WORKER
   local FORCED_WORKER="${EX_FORCED_WORKER}" && unset EX_FORCED_WORKER
   local APISERVER_PORT="${EX_APISERVER_PORT}" && unset EX_APISERVER_PORT
+  local APISERVER_INSECURE_PORT="${EX_APISERVER_INSECURE_PORT}" && unset EX_APISERVER_INSECURE_PORT
   local ETCD_CLIENT_PORT="${EX_ETCD_CLIENT_PORT}" && unset EX_ETCD_CLIENT_PORT
   local RESET_LABELS="${EX_RESET_LABELS}" && unset EX_RESET_LABELS
   local ENABLE_KEYSTONE="${EX_ENABLE_KEYSTONE}" && unset EX_ENABLE_KEYSTONE
   local CREATOR="${EX_CREATOR}" && unset EX_CREATOR
+  local IPADDR="$(echo "${IPCIDR}" | cut -d '/' -f 1)"
+  local NODE_NAME="${EX_NODE_NAME:-$(hostname)}" && unset EX_NODE_NAME
   local ETCD_PROXY=""
   local APIHOST=""
   local APISERVER=""
@@ -528,7 +564,7 @@ function main(){
   export REGISTRY="${EX_REGISTRY}"
   export ARCH=amd64
   export K8S_VERSION="${EX_K8S_VERSION}"
-  export ADDON_MGR_VER=v6.1
+  export ADDON_MGR_VER="v6.1.2"
   local HYPERKUBE_IMAGE_NAME="${REGISTRY}/hyperkube-amd64:v${K8S_VERSION}"
 
   # Erase old k8s emptyDir
@@ -561,8 +597,8 @@ function main(){
 
   echo "Copy manifests-multi to /etc/kubernetes"
 
-  mkdir -p mkdir -p "${KUBE_CONF_PATH}"
-  mkdir -p ${KUBE_ETC}/addons
+  mkdir -p "${KUBE_CONF_PATH}"
+  mkdir -p "${KUBE_ETC}/addons"
   mkdir -p "${KUBELET_VARLIB}/kubeconfig"
   mkdir -p "${KUBE_ADDONS_CONF_PATH}"
 
@@ -574,13 +610,19 @@ function main(){
 
   local K8SUP_NTPSERVER_VERSION="0.1"
   local K8SUP_NTPSERVER_CLUSTER_IP="10.0.0.12"
-  local SUBNET_ID_AND_MASK="$(ip addr show | grep -o -w "${IPADDR}\/[0-9]\{1,2\}" | xargs -n1 -P2 bash -c 'get_subnet_id_and_mask "$@"' _)"
+  local NETCIDR="$(ip addr show | grep -o -w "${IPADDR}\/[0-9]\{1,2\}" | xargs -n1 -P2 bash -c 'get_netcidr_by_ipcidr "$@"' _)"
   [[ "${REGISTRY}" == "gcr.io/google_containers" ]] && local NTPSERVER_REGISTRY="wcen" || local NTPSERVER_REGISTRY="${REGISTRY}"
-  sed -i "s|\bK8SUP_SUBNET_ID\b|${SUBNET_ID_AND_MASK}|g" "${KUBE_ADDONS_CONF_PATH/}"/ntp-server/*.yaml
+  sed -i "s|\bK8SUP_SUBNET_ID\b|${NETCIDR}|g" "${KUBE_ADDONS_CONF_PATH/}"/ntp-server/*.yaml
   sed -i "s|\bK8SUP_NTPSERVER_CLUSTER_IP\b|${K8SUP_NTPSERVER_CLUSTER_IP}|g" "${KUBE_ADDONS_CONF_PATH/}"/ntp-server/*.yaml
   sed -i "s|\bNTPSERVER_REGISTRY\b|${NTPSERVER_REGISTRY}|g" "${KUBE_ADDONS_CONF_PATH/}"/ntp-server/*.yaml
   sed -i "s|\bK8SUP_NTPSERVER_VERSION\b|${K8SUP_NTPSERVER_VERSION}|g" "${KUBE_ADDONS_CONF_PATH/}"/ntp-server/*.yaml
   sed -i "s|\"--v=[0-9]\"|\"--v=${K8S_DEBUG_LEVEL}\"|g" "${KUBE_CONF_PATH}"/master-multi.json "${KUBE_ADDONS_CONF_PATH}"/kube-proxy.yaml
+  sed -i "s|\bNODE_IPADDR\b|${IPADDR}|g" "${KUBE_CONF_PATH}"/master-multi.json
+
+  if [[ -n "${KUBE_APISERVER_OPTS}" ]]; then
+    KUBE_APISERVER_OPTS="$(echo "${KUBE_APISERVER_OPTS}" | sed 's| -|\\\",\\n              \\\"-|g')"
+    sed -i "s|              \"apiserver\",$|              \"apiserver\",\n              \"${KUBE_APISERVER_OPTS}\",|g" "${KUBE_CONF_PATH}"/master-multi.json
+  fi
 
   # Replace strings in all json and yaml files in sub-directories
   [[ "${REGISTRY}" == "gcr.io/google_containers" ]] && local KUBERNETES_REGISTRY="kubernetes" || local KUBERNETES_REGISTRY="${REGISTRY}"
@@ -590,6 +632,7 @@ function main(){
   find "${KUBE_ETC}" -type f \( -name "*.json" -or -name "*.yaml" \) -print0 | xargs -0 sed -i "s|\bVERSION\b|v${K8S_VERSION}|g"
   find "${KUBE_ETC}" -type f \( -name "*.json" -or -name "*.yaml" \) -print0 | xargs -0 sed -i "s|\bDOMAIN_NAME\b|${DOMAIN_NAME}|g"
   find "${KUBE_ETC}" -type f \( -name "*.json" -or -name "*.yaml" \) -print0 | xargs -0 sed -i "s|\bADDON_MGR_VER\b|${ADDON_MGR_VER}|g"
+  find "${KUBE_ETC}" -type f \( -name "*.json" -or -name "*.yaml" \) -print0 | xargs -0 sed -i "s|\bAPISERVER_INSECURE_PORT\b|${APISERVER_INSECURE_PORT}|g"
   find "${KUBE_ETC}" -type f \( -name "*.json" -or -name "*.yaml" \) -print0 \
     | xargs -0 sed -i "s|\"--master=127.0.0.1:8080\"\,|\"--leader-elect=true\"\,\n              \"--kubeconfig=/var/lib/kubelet/kubeconfig/kubeconfig.yaml\"\,|g"
   find "${KUBE_ETC}" -type f \( -name "*.json" -or -name "*.yaml" \) -print0 \
@@ -603,7 +646,8 @@ function main(){
     --volume=/var/run/dbus \
     "${HYPERKUBE_IMAGE_NAME}" \
     /hyperkube proxy \
-      --cleanup-iptables
+      --cleanup-iptables \
+    || true
 
   echo "Getting or generating certs..." 1>&2
   [[ "$-" == *x* ]] && local DEBUG_CMD="bash -x"
@@ -653,7 +697,7 @@ function main(){
 
   local RBD_PATHS
   if RBD_PATHS=($(rbd_env_detector)); then
-    local RBD_OPTIONS_KUBELET="$(make_rbd_docker_option "${RBD_PATHS[@]}")"
+    local RBD_OPTIONS_KUBELET="$(make_rbd_docker_option "${RBD_PATHS[@]}" "${HYPERKUBE_IMAGE_NAME}")"
     update_master_multi_rbd_mount "${RBD_PATHS[@]}" "${KUBE_CONF_PATH}/master-multi.json"
   fi
 
@@ -669,13 +713,29 @@ function main(){
            | grep 10.0.0.1/32 \
            | sed "s/^-A/-D/g" \
            | sed -n 's|\(^.*$\)|iptables -w -t nat \1|p')
-  # Add new a rule
+  # Remove old route rules
+  if ip route | grep -w "^10.0.0.1 dev" 1>/dev/null; then
+    ip route delete "10.0.0.1"
+  fi
+  # Add a new route rule
   iptables -w -t nat -I OUTPUT --dest 10.0.0.1 -p tcp --dport 443 \
     -m comment --comment "k8sup" -j DNAT --to-dest "${APIHOST}"
 
   # Make sure that this host will use the right interface while accessing API server
-  local GW_IFACE="$(ip route | grep default | awk '{print $5}')"
-  ip route add 10.0.0.1/32 dev "${GW_IFACE}" &>/dev/null || true
+  local IFACE="$(ip addr | grep -B2 "inet ${IPCIDR}" | sed -n "s|^[0-9]\+: \(.*\): .*|\1|p" | cut -d '@' -f 1)"
+  local IFACE IFACE_LIST="$(ls /sys/class/net/ | grep -v "lo\|bonding_masters\|docker0\|flannel.1\|cni0\|veth")"
+  for IFACE in ${IFACE_LIST}; do
+    if ip addr show "${IFACE}" 2>/dev/null | grep -q "\b${IPCIDR}\b"; then
+      break
+    fi
+  done
+  if [[ -z "${IFACE}" ]] || ! ip addr show "${IFACE}" &>/dev/null; then
+    echo "Could not get network interface which use '${IPCIDR}', exiting..." 1>&2
+    exit 1
+  fi
+  ip route add "10.0.0.0/24" dev "${IFACE}" &>/dev/null || true
+
+  local NODE_LABELS="$(get_node_labels "${IPADDR}" "${WORKER}" "${FORCED_WORKER}")"
 
   echo "Running Kubernetes ..."
   docker run \
@@ -697,6 +757,7 @@ function main(){
       --net=host \
       --privileged=true \
       --pid=host \
+      --restart=on-failure \
       --name=k8sup-kubelet \
       -d \
       "${HYPERKUBE_IMAGE_NAME}" \
@@ -705,9 +766,9 @@ function main(){
           --require-kubeconfig=true \
           --kubeconfig=${KUBELET_VARLIB}/kubeconfig/kubeconfig.yaml \
           --v="${K8S_DEBUG_LEVEL}" \
+          --node-ip="${IPADDR}" \
           --address=0.0.0.0 \
           --enable-server \
-          --hostname-override="${IPADDR}" \
           --pod-manifest-path=${KUBE_CONF_PATH} \
           --containerized \
           --network-plugin=cni \
@@ -715,7 +776,7 @@ function main(){
           --pod-infra-container-image=${REGISTRY}/pause-${ARCH}:3.0 \
           --cluster-dns=${KUBEDNS_CLUSTER_IP} \
           --cluster-domain=cluster.local \
-          --node-labels="$(set_role_labels "${WORKER}" "${FORCED_WORKER}")"
+          --node-labels="${NODE_LABELS}"
 
   echo "Waiting for kube-proxy connect to apiserver..."
   until [[ "$(test_proxy)" -ge "1" ]]; do
@@ -728,13 +789,8 @@ function main(){
     sleep 1
   done
 
-  set_node_schedulable "${IPADDR}" "${KUBELET_VARLIB}" "${HYPERKUBE_IMAGE_NAME}"
-  update_node_role_label "${IPADDR}" "${KUBELET_VARLIB}" "${HYPERKUBE_IMAGE_NAME}" "${WORKER}"
-
-  mark_default_iface_ipaddr "${IPADDR}" "${ETCD_CLIENT_PORT}"
-
-  # Set routing table to make host can access cni services using cluster IP
-  cni_svc_route_maintainer "10.0.0.0/24" &
+  set_node_schedulable "${NODE_NAME}" "${KUBELET_VARLIB}" "${HYPERKUBE_IMAGE_NAME}"
+  update_node_labels "${NODE_NAME}" "${KUBELET_VARLIB}" "${HYPERKUBE_IMAGE_NAME}" "${NODE_LABELS}"
 
   # If NTP client is not found then start a NTP client
   if ps aux | grep -v grep | grep -wE "systemd-timesyncd|ntpd" &>/dev/null; then
