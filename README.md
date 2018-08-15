@@ -6,7 +6,7 @@ Default behavior:
 1. If only one cluster is discovered, join it automatically.
 2. If more than one cluster are discovered, start a new cluster.
 
-You can specify the same cluster ID to multiple nodes that it will make them become the same cluster. Conversely, You can also specify a different cluster ID to start node(s) as another cluster.
+You can specify the same cluster ID (or name) to multiple nodes that it will make them become the same cluster. Conversely, You can also specify a different cluster ID (or name) to start node(s) as another cluster.
 
 ```
 Options:
@@ -26,17 +26,21 @@ Options:
 -h, --help                     This help text
 ```
 
-Run k8s:
+Examples:
+
+Run k8s on CoreOS:
 ```
+$ CLUSTER_ID_OR_NAME="my-cluster"
+$ NETADDR="192.168.56.0/24"
 $ docker pull cdxvirt/k8sup:latest
 $ docker run -d \
     --privileged \
     --net=host \
     --pid=host \
     --restart=always \
-    -v $(which docker):/bin/docker:ro \
+    -v /run/torcx/bin/docker:/bin/docker:ro \
     -v /var/run/docker.sock:/var/run/docker.sock \
-    -v /usr/lib/:/host/lib:ro \
+    -v /run/torcx/unpack/docker/lib:/host/lib:ro \
     -v /lib/modules:/lib/modules:ro \
     -v /etc/cni:/etc/cni \
     -v /var/lib/cni:/var/lib/cni \
@@ -45,19 +49,20 @@ $ docker run -d \
     -v /etc/kubernetes:/etc/kubernetes \
     --name=k8sup \
     cdxvirt/k8sup:latest \
-    --network={your-subnet-id/mask}
+    --cluster="${CLUSTER_ID_OR_NAME}" \
+    --network="${NETADDR}"
 ```
 
-Stop k8s:
+Stop k8s on CoreOS:
 ```
 $ docker run \
     --privileged \
     --net=host \
     --pid=host \
     --rm=true \
-    -v $(which docker):/bin/docker:ro \
+    -v /run/torcx/bin/docker:/bin/docker:ro \
     -v /var/run/docker.sock:/var/run/docker.sock \
-    -v /usr/lib/:/host/lib:ro \
+    -v /run/torcx/unpack/docker/lib:/host/lib:ro \
     -v /lib/modules:/lib/modules:ro \
     -v /usr/sbin/modprobe:/usr/sbin/modprobe:ro \
     -v /opt/bin:/opt/bin:rw \
@@ -70,16 +75,16 @@ $ docker run \
     cdxvirt/k8sup:latest
 ```
 
-Remove k8s from node:
+Remove k8s from node on CoreOS:
 ```
 $ docker run \
     --privileged \
     --net=host \
     --pid=host \
     --rm=true \
-    -v $(which docker):/bin/docker:ro \
+    -v /run/torcx/bin/docker:/bin/docker:ro \
     -v /var/run/docker.sock:/var/run/docker.sock \
-    -v /usr/lib/:/host/lib:ro \
+    -v /run/torcx/unpack/docker/lib:/host/lib:ro \
     -v /lib/modules:/lib/modules:ro \
     -v /usr/sbin/modprobe:/usr/sbin/modprobe:ro \
     -v /opt/bin:/opt/bin:rw \
