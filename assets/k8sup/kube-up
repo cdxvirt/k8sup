@@ -439,6 +439,7 @@ Options:
     --token=TOKEN                   Boostrap token
     --ca-hash=CA_HASH              To verify the TLS boostrap seed host CA cert
     --unsafe-skip-ca-verification   Skip valid the hash of TLS boostrap seed host CA cert
+    --max-master-size=NUM           Maximum master node size (Default: 3)
 -p, --worker                        Run as k8s worker
 -t, --target-host                   The k8s host need to join
 -a, --apiserver-port=PORT           Apiserver port (Default: 6443)
@@ -460,7 +461,7 @@ Options:
 function get_options(){
   local PROGNAME="${0##*/}"
   local SHORTOPTS="i:wa:v:r:h"
-  local LONGOPTS="ip-cidr:,token:,ca-hash:,unsafe-skip-ca-verification,target-host:,apiserver-port:,apiserver-insecure-port:,etcd-port:,creator,worker,version:,cni-plugin:,registry:,forced-worker,reset-labels,enable-keystone,help"
+  local LONGOPTS="ip-cidr:,token:,ca-hash:,unsafe-skip-ca-verification,target-host:,apiserver-port:,apiserver-insecure-port:,max-master-size:,etcd-port:,creator,worker,version:,cni-plugin:,registry:,forced-worker,reset-labels,enable-keystone,help"
   local PARSED_OPTIONS=""
 
   PARSED_OPTIONS="$(getopt -o "${SHORTOPTS}" --long "${LONGOPTS}" -n "${PROGNAME}" -- "$@")" || exit 1
@@ -511,6 +512,10 @@ function get_options(){
               ;;
           -v|--version)
               export EX_K8S_VERSION="$2"
+              shift 2
+              ;;
+             --max-master-size)
+              export EX_MAX_MASTER_SIZE="$2"
               shift 2
               ;;
              --cni-plugin)
@@ -570,6 +575,10 @@ function get_options(){
     exit 1
   fi
 
+  if [[ -z "${EX_MAX_MASTER_SIZE}" ]]; then
+    export EX_MAX_MASTER_SIZE="3"
+  fi
+
   if [[ "${EX_CREATOR}" != "true" ]]; then
     export EX_CREATOR="false"
   fi
@@ -600,13 +609,15 @@ function get_options(){
     export EX_CNI_PLUGIN="flannel"
   fi
 
-  if [[ "${EX_WORKER}" == "true" ]] && [[ "${EX_CREATOR}" == "true" ]]; then
-    echo "The role only can be either a creator or a worker, exiting..." 1>&2
-    exit 1
-  fi
-
-  if [[ "${EX_WORKER}" != "true" ]]; then
-    export EX_WORKER="false"
+  if [[ "${EX_CREATOR}" == "true" ]]; then
+    if [[ "${EX_WORKER}" == "true" ]]; then
+      echo "The role only can be either a creator or a worker, exiting..." 1>&2
+      exit 1
+    else
+      export EX_WORKER="false"
+    fi
+  else
+    export EX_WORKER="true"
   fi
 
   if [[ "${EX_ENABLE_KEYSTONE}" != "true" ]]; then
@@ -701,6 +712,7 @@ function main(){
   local CREATOR="${EX_CREATOR}" && unset EX_CREATOR
   local IPADDR="$(echo "${IPCIDR}" | cut -d '/' -f 1)"
   local NODE_NAME="${EX_NODE_NAME:-$(hostname)}" && unset EX_NODE_NAME
+  local MAX_MASTER_SIZE="${EX_MAX_MASTER_SIZE}" && unset EX_MAX_MASTER_SIZE
   local CNI_PLUGIN="${EX_CNI_PLUGIN}" && unset EX_CNI_PLUGIN
   local TOKEN="${EX_TOKEN}" && unset EX_TOKEN
   local CA_HASH="${EX_CA_HASH}" && unset EX_CA_HASH
@@ -788,6 +800,71 @@ function main(){
       --service-cidr="10.0.0.0/24" \
       --network-provider="${CNI_PLUGIN}"
 
+
+    # Generate etcd ca, certs, and keys
+    ETCD_NAMESPACE="kube-system"
+    ETCD_DN="etcd"
+    ETCD_CERT_PATH="${KUBE_ETC}/secrets/etcd"
+    OPENSSL_CONF_FILE_PATH="${KUBE_ETC}/openssl.cnf"
+    K8S_CACERT_FILE="${KUBE_ETC}/k8s-assets/tls/ca.crt"
+    K8S_CAKEY_FILE="${KUBE_ETC}/k8s-assets/tls/ca.key"
+    rm -f "${KUBE_ETC}/k8s-assets/tls/etcd-client"*
+    mkdir -p "${ETCD_CERT_PATH}"
+    cp -f "/etc/ssl/openssl.cnf" "${OPENSSL_CONF_FILE_PATH}"
+    sed -i "s/\[ v3_req \]/[ v3_req ]\nsubjectAltName = @alt_names/g" \
+      "${OPENSSL_CONF_FILE_PATH}"
+    echo '[ alt_names ]' >> "${OPENSSL_CONF_FILE_PATH}"
+    echo "DNS.1 = *.${ETCD_DN}" >> "${OPENSSL_CONF_FILE_PATH}"
+    echo "DNS.2 = *.${ETCD_DN}.cdxvirt" >> "${OPENSSL_CONF_FILE_PATH}"
+    echo "DNS.3 = *.${ETCD_DN}.cdxvirt.local" >> "${OPENSSL_CONF_FILE_PATH}"
+    echo "IP.1 = 127.0.0.1" >> "${OPENSSL_CONF_FILE_PATH}"
+    CERT_NAMES="etcd-client"
+    for CERT_NAME in ${CERT_NAMES}; do
+      cp -f "${K8S_CACERT_FILE}" "${ETCD_CERT_PATH}/${CERT_NAME}-ca.crt"
+      openssl genrsa -out "${ETCD_CERT_PATH}/${CERT_NAME}.key" 2048
+      openssl req -new -key "${ETCD_CERT_PATH}/${CERT_NAME}.key" \
+        -out "${ETCD_CERT_PATH}/${CERT_NAME}.csr" -subj "/CN=*.${ETCD_DN}" \
+        -config ${OPENSSL_CONF_FILE_PATH} -extensions v3_req -reqexts v3_req
+      openssl x509 -req -in "${ETCD_CERT_PATH}/${CERT_NAME}.csr" \
+        -CA "${K8S_CACERT_FILE}" -CAkey "${K8S_CAKEY_FILE}" \
+        -CAcreateserial -out "${ETCD_CERT_PATH}/${CERT_NAME}.crt" -days 36500 \
+        -extensions v3_req -extfile ${OPENSSL_CONF_FILE_PATH}
+    done
+    rm -f "${ETCD_CERT_PATH}"/*.csr
+    cp "${ETCD_CERT_PATH}/etcd-client"* "${KUBE_ETC}/k8s-assets/tls/"
+
+
+    # Prepare the etcd static pod
+    mkdir -p "${KUBE_CONF_PATH}"
+    local ETCD_VERSION="3.2.18"
+    local ETCD_SEED_DN="$(hostname).${ETCD_DN}.cdxvirt.local"
+    echo "${IPADDR} ${ETCD_SEED_DN}" > "${KUBE_ETC}/etcd-hosts"
+    cp -f "${KUBE_ETC}/k8s-assets/tls/ca.crt" "${KUBE_ETC}/secrets"
+    cp "/workdir/assets/k8sup/kube-conf/etcd/etcd.yaml" "${KUBE_CONF_PATH}"
+    sed -i "s|{{ NODE_NAME }}|${NODE_NAME}|g" "${KUBE_CONF_PATH}/etcd.yaml"
+    sed -i "s|{{ ETCD_VERSION }}|${ETCD_VERSION}|g" "${KUBE_CONF_PATH}/etcd.yaml"
+    sed -i "s|{{ ETCD_DOMAIN_NAME }}|${ETCD_SEED_DN}|g" "${KUBE_CONF_PATH}/etcd.yaml"
+    sed -i "s|{{ KUBEDNS_CLUSTER_IP }}|${KUBEDNS_CLUSTER_IP}|g" "${KUBE_CONF_PATH}/etcd.yaml"
+
+    #--- set etcd domain name to the zone file
+    ZONEFILE_DIR_PATH="/etc/kubernetes/coredns/zones"
+    ZONEFILE_NAME="${ETCD_DN}.cdxvirt.local"
+    ZONEFILE_PATH="${ZONEFILE_DIR_PATH}/${ZONEFILE_NAME}"
+    mkdir -p "${ZONEFILE_DIR_PATH}"
+    ZONEFILE="\$ORIGIN etcd.cdxvirt.local.
+    @ 3600 IN SOA coredns.kube-system. coredns.kube-system.svc.cluster.local. (
+        $(date +%Y%m%d)00 ; serial
+        7200       ; refresh (2 hours)
+        3600       ; retry (1 hour)
+        1209600    ; expire (2 weeks)
+        3600       ; minimum (1 hour)
+        )
+    3600 IN NS coredns.kube-system.svc.cluster.local.
+
+    $(hostname)   IN A     ${IPADDR}"
+    echo "${ZONEFILE}" | sed 's/^    //g' > "${ZONEFILE_PATH}"
+
+    #---
     # Generate ca, certs, and keys
     OPENSSL_CONF_FILE_PATH="/etc/ssl/openssl.cnf"
     openssl genrsa -out "${KUBE_ETC}/front-proxy-ca.key" 2048
@@ -835,11 +912,7 @@ function main(){
 
     local APISERVER_YAML_FILE="${KUBE_ETC}/k8s-assets/bootstrap-manifests/bootstrap-apiserver.yaml"
     if grep -q '\--etcd-cafile=' "${APISERVER_YAML_FILE}"; then
-      sed -i '/--etcd-cafile=/d' "${APISERVER_YAML_FILE}"
-      sed -i '/--etcd-certfile=/d' "${APISERVER_YAML_FILE}"
-      sed -i '/--etcd-keyfile=/d' "${APISERVER_YAML_FILE}"
-      sed -i '/--etcd-quorum-read=/d' "${APISERVER_YAML_FILE}"
-      sed -i 's/--etcd-servers=https:\/\/.*:2379/--etcd-servers=http:\/\/127.0.0.1:2379/g' "${APISERVER_YAML_FILE}"
+      sed -i "s/--etcd-servers=https:\/\/.*:2379/--etcd-servers=https:\/\/${ETCD_SEED_DN}:2379/g" "${APISERVER_YAML_FILE}"
     fi
     if ! grep -q 'kubelet-preferred-address' "${APISERVER_YAML_FILE}"; then
       sed -i 's|    - apiserver|    - apiserver\n    - --kubelet-preferred-address-types=InternalIP,Hostname,ExternalIP|g' \
@@ -849,13 +922,13 @@ function main(){
       sed -i 's|--secure-port=443|--secure-port=6443|g' \
         "${APISERVER_YAML_FILE}"
     fi
+    if ! grep -q 'etcd-hosts' "${APISERVER_YAML_FILE}"; then
+      sed -i 's|  volumes:$|  volumes:\n  - name: etcd-hosts\n    hostPath: \n      path: /etc/kubernetes/etcd-hosts\n      type: File|g' "${APISERVER_YAML_FILE}"
+      sed -i 's|    volumeMounts:|    volumeMounts:\n    - mountPath: /etc/hosts\n      name: etcd-hosts\n      readOnly: true|g' "${APISERVER_YAML_FILE}"
+    fi
     APISERVER_YAML_FILE="${KUBE_ETC}/k8s-assets/manifests/kube-apiserver.yaml"
     if grep -q '\--etcd-cafile=' "${APISERVER_YAML_FILE}"; then
-      sed -i '/--etcd-cafile=/d' "${APISERVER_YAML_FILE}"
-      sed -i '/--etcd-certfile=/d' "${APISERVER_YAML_FILE}"
-      sed -i '/--etcd-keyfile=/d' "${APISERVER_YAML_FILE}"
-      sed -i '/--etcd-quorum-read=/d' "${APISERVER_YAML_FILE}"
-      sed -i 's/--etcd-servers=https:\/\/.*:2379/--etcd-servers=http:\/\/127.0.0.1:2379/g' "${APISERVER_YAML_FILE}"
+      sed -i "s/--etcd-servers=https:\/\/.*:2379/--etcd-servers=https:\/\/${ETCD_SEED_DN}:2379/g" "${APISERVER_YAML_FILE}"
     fi
     if ! grep -q 'kubelet-preferred-address' "${APISERVER_YAML_FILE}"; then
       sed -i 's|    - apiserver|    - apiserver\n        - --kubelet-preferred-address-types=InternalIP,Hostname,ExternalIP|g' \
@@ -897,6 +970,14 @@ function main(){
       sed -i 's|    - apiserver|    - apiserver\n        - --service-account-key-file=/etc/kubernetes/secrets/sa.pub|g' \
         "${APISERVER_YAML_FILE}"
     fi
+    if ! grep -q 'dnsConfig' "${APISERVER_YAML_FILE}"; then
+      sed -i 's|dnsPolicy:.*|dnsPolicy: None|g' "${APISERVER_YAML_FILE}"
+      sed -i "s|      hostNetwork: .*|      hostNetwork: true\n      dnsPolicy: None\n      dnsConfig:\n        nameservers:\n          - ${KUBEDNS_CLUSTER_IP}\n        searches:\n          - kube-system.svc.cluster.local\n          - svc.cluster.local\n          - cluster.local\n        options:\n          - name: ndots\n            value: \"2\"|g" "${APISERVER_YAML_FILE}"
+    fi
+    if ! grep -q 'etcd-hosts' "${APISERVER_YAML_FILE}"; then
+      sed -i 's|      volumes:$|      volumes:\n      - name: etcd-hosts\n        hostPath:\n          path: /etc/kubernetes/etcd-hosts\n          type: File|g' "${APISERVER_YAML_FILE}"
+      sed -i 's|        volumeMounts:|        volumeMounts:\n        - mountPath: /etc/hosts\n          name: etcd-hosts\n          readOnly: true|g' "${APISERVER_YAML_FILE}"
+    fi
     if ! grep -q 'basic-auth' "${APISERVER_YAML_FILE}"; then
       sed -i 's|      volumes:$|      volumes:\n      - name: basic-auth\n        secret:\n          secretName: basic-auth|g' "${APISERVER_YAML_FILE}"
       sed -i 's|        volumeMounts:|        volumeMounts:\n        - mountPath: /etc/kubernetes/basic_auth\n          name: basic-auth\n          readOnly: true|g' "${APISERVER_YAML_FILE}"
@@ -910,7 +991,7 @@ function main(){
     if ! grep -q 'ABAC' "${APISERVER_YAML_FILE}"; then
       sed -i 's|      volumes:$|      volumes:\n      - name: abac-policy\n        configMap:\n          name: abac-policy|g' "${APISERVER_YAML_FILE}"
       sed -i 's|        volumeMounts:|        volumeMounts:\n        - mountPath: /etc/kubernetes/abac-policy\n          name: abac-policy\n          readOnly: true|g' "${APISERVER_YAML_FILE}"
-      sed -i 's|RBAC|RBAC,ABAC\n        - --authorization-policy-file=/etc/kubernetes/abac-policy/abac-policy-file.jsonl|g' "${APISERVER_YAML_FILE}"
+      sed -i 's|RBAC|ABAC,RBAC\n        - --authorization-policy-file=/etc/kubernetes/abac-policy/abac-policy-file.jsonl|g' "${APISERVER_YAML_FILE}"
     fi
     CONTROLLER_MANAGER_YAML_FILE="${KUBE_ETC}/k8s-assets/manifests/kube-controller-manager.yaml"
     if ! grep -q 'tokencleaner' "${CONTROLLER_MANAGER_YAML_FILE}"; then
@@ -920,6 +1001,22 @@ function main(){
     if ! grep -q 'service-account-private-key-file' "${CONTROLLER_MANAGER_YAML_FILE}"; then
       sed -i 's|        - controller-manager|        - controller-manager\n        - --service-account-private-key-file=/etc/kubernetes/secrets/sa.key|g' \
         "${CONTROLLER_MANAGER_YAML_FILE}"
+    fi
+    COREDNS_DEPLOY_YAML_FILE="${KUBE_ETC}/k8s-assets/manifests/coredns-deployment.yaml"
+    if ! grep -q 'coredns-zonefiles' "${COREDNS_DEPLOY_YAML_FILE}"; then
+      sed -i 's|      volumes:$|      volumes:\n        - name: coredns-zonefiles\n          configMap:\n            name: coredns-zonefiles|g' "${COREDNS_DEPLOY_YAML_FILE}"
+      sed -i 's|          volumeMounts:|          volumeMounts:\n            - name: coredns-zonefiles\n              mountPath: /etc/coredns/zones\n              readOnly: true|g' "${COREDNS_DEPLOY_YAML_FILE}"
+    fi
+    COREDNS_CONFIG_YAML_FILE="${KUBE_ETC}/k8s-assets/manifests/coredns-config.yaml"
+    if ! grep -q "${ETCD_DN}.cdxvirt.local" "${COREDNS_CONFIG_YAML_FILE}"; then
+      ETCD_COREFILE_SETTING="
+      ${ETCD_DN}.cdxvirt.local {
+        file /etc/coredns/zones/${ZONEFILE_NAME}
+        prometheus
+        errors stdout
+        log stdout
+      }"
+      echo "${ETCD_COREFILE_SETTING}" | sed 's/^      /    /g' >> "${COREDNS_CONFIG_YAML_FILE}"
     fi
 
     # Add front-proxy secrets
@@ -1125,6 +1222,23 @@ function main(){
 
     echo "Try to start admin-token-loader..." 1>&2
     start_addon "${HYPERKUBE_IMAGE_NAME}" "${KUBE_ETC}" "${KUBECONFIG_PATH}" "${KUBELET_VARLIB}" "admin-token-loader"
+
+    echo "Try to set the max-master-size to '${MAX_MASTER_SIZE}'..." 1>&2
+    run_kubectl "${HYPERKUBE_IMAGE_NAME}" "${KUBECONFIG_PATH}" "${KUBELET_VARLIB}" "" "create configmap k8sup-conf --from-literal=MAX_MASTER_SIZE='${MAX_MASTER_SIZE}'"
+
+    echo "Try to set the seed etcd zone file..." 1>&2
+    run_kubectl "${HYPERKUBE_IMAGE_NAME}" "${KUBECONFIG_PATH}" "${KUBELET_VARLIB}" "${KUBE_ETC}:${KUBE_ETC}:ro" "-n kube-system create configmap coredns-zonefiles --from-file='${ZONEFILE_NAME}'='${ZONEFILE_PATH}'"
+
+    # Remove the unneeded seed etcd node domain name mapping
+    until dig +time=3 +tries=1 @${KUBEDNS_CLUSTER_IP} "${ETCD_SEED_DN}" \
+      | grep -q 'ANSWER SECTION'; do
+        echo "Waiting for CoreDNS started..." 1>&2
+        sleep 20
+    done
+    cat "/dev/null" > "${KUBE_ETC}/etcd-hosts"
+
+    # Remove unneeded etcd cert files
+    rm -rf "${KUBE_ETC}/k8s-assets/tls/etcd"
   fi
 
   check_and_run_ntp_update "${K8SUP_NTPSERVER_CLUSTER_IP}"
